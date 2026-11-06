@@ -3,7 +3,7 @@ services:
   - type: web
     name: my-mint
     runtime: node
-    plan: 0.5c-512mb  # cheapest paid web service; "free" also works but sleeps when idle
+    plan: free  # sleeps after ~15 min idle; switch to 0.5c-512mb for always-on
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /healthz
