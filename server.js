@@ -126,6 +126,14 @@ app.use((req, res, next) => {
 
 app.use(express.static(path.join(__dirname, 'public')));
 
+// The server listens before the database is ready (so Render's port check passes);
+// API calls get a 503 until the schema is in place.
+let dbReady = false;
+app.use('/api', (_req, res, next) => {
+  if (dbReady) return next();
+  res.status(503).json({ error_message: 'Database is starting up. Try again in a moment.' });
+});
+
 // ------------------------------------------------------------------ plaid --
 function plaidError(err) {
   return err.response?.data || { error_message: err.message };
@@ -286,8 +294,23 @@ app.use((err, _req, res, _next) => {
 
 const SYNC_INTERVAL_HOURS = Number(process.env.SYNC_INTERVAL_HOURS ?? 6);
 
-store.init().then(() => {
-  app.listen(PORT, () => console.log(`my-mint listening on :${PORT} (Plaid ${PLAID_ENV})`));
+async function initDatabase() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await store.init();
+      dbReady = true;
+      console.log('database ready');
+      return;
+    } catch (err) {
+      const delay = Math.min(30, 2 ** attempt);
+      console.error(`database init failed (attempt ${attempt}): ${err.message}; retrying in ${delay}s`);
+      await new Promise((r) => setTimeout(r, delay * 1000));
+    }
+  }
+}
+
+app.listen(PORT, () => console.log(`my-mint listening on :${PORT} (Plaid ${PLAID_ENV})`));
+initDatabase().then(() => {
   if (SYNC_INTERVAL_HOURS > 0) {
     setInterval(() => {
       syncAll()

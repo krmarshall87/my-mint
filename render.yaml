@@ -26,14 +26,7 @@ services:
         generateValue: true
       - key: SYNC_INTERVAL_HOURS
         value: "6"
+      # CockroachDB (or any Postgres) connection string, entered in the Render
+      # dashboard. Never commit it: it contains the database password.
       - key: DATABASE_URL
-        fromDatabase:
-          name: my-mint-db
-          property: connectionString
-
-databases:
-  - name: my-mint-db
-    plan: 0.1c-256mb  # cheapest paid Postgres; "free" also works but expires after 30 days
-    databaseName: mymint
-    user: mymint
-    ipAllowList: []  # internal connections only
+        sync: false
