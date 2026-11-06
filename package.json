@@ -1,0 +1,18 @@
+{
+  "name": "my-mint",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Personal transaction viewer powered by Plaid",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch --env-file-if-exists=.env server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "pg": "^8.16.0",
+    "plaid": "^50.0.0"
+  }
+}
