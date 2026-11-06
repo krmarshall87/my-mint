@@ -1,0 +1,38 @@
+# CLAUDE.md
+
+My Mint is a personal app: Plaid-linked bank accounts and their transactions in one view. Node 20+ and Express (`server.js`), with storage in `db.js` (Postgres when `DATABASE_URL` is set, otherwise a JSON file at `data/store.json`). The frontend in `public/` is plain HTML, CSS and JS with no build step. It is deployed on Render through the `render.yaml` Blueprint, which auto-deploys from `master`.
+
+## Workflow
+
+- **Always merge your own PRs.** Branch, push, open the PR, and once your checks pass, mark it ready and merge it into `master`. You don't need to ask first. Merging deploys to Render.
+- Before pushing, run `node --check server.js db.js public/app.js`. If you changed `db.js`, also exercise both stores (the JSON file and a local Postgres).
+- Test anything that touches Plaid against the **sandbox** (`PLAID_ENV=sandbox`). To link the test bank without the UI, call `sandboxPublicTokenCreate` (`ins_109508`, First Platypus Bank, `initial_products: ['transactions']`), then POST to `/api/exchange`. Test the Link pop-up itself with Playwright using `user_good` / `pass_good`.
+- Never commit secrets: no Plaid keys, `.env`, `data/`, or access tokens. Pass keys as environment variables only.
+
+## Plaid conventions
+
+- In Plaid amounts, **positive means money leaving the account**. The UI shows positive amounts as outflow (−) and negative ones as inflow (+). Keep that convention everywhere, including CSV export.
+- Sync with `/transactions/sync`, keeping one cursor per Item. Apply each batch (added, modified, removed, cursor) in a single transaction so a partial failure never moves the cursor forward. If you get `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`, restart from the original cursor.
+- An empty `next_cursor` with no transactions added means Plaid is still preparing the history. Report it as `pending_initial_pull`; it is not an error.
+- Access tokens are encrypted at rest (`enc:v1:` prefix, AES-256-GCM, using `ENCRYPTION_KEY`). Always go through the `items.*` helpers in `server.js`, not `store.*Item` directly. Never log an access token or return one from an API. **`ENCRYPTION_KEY` must never change**, or every saved connection becomes unreadable.
+- Sandbox and production Items don't mix. Tokens are tied to one environment.
+
+## Architecture rules
+
+- **Run one instance only.** The password-lockout map, the `syncInFlight` lock and the background `setInterval` sync all live in process memory. Running more than one Render instance would split the lockout and run overlapping syncs. To scale out, first move these into Postgres (for example, a `pg_advisory_lock` for sync and a table for login failures).
+- **Start up fast.** Render fails a deploy if the port isn't bound in time. Avoid slow network calls before `app.listen`, and keep the database connection lazy (`pg.Pool` connects on first query).
+- **Configuration comes from environment variables, read at use time.** `.env` and Render env vars hold only bootstrap settings and secrets. Don't freeze values that change at runtime into module-level constants. Add a config table only if settings need to change without a redeploy.
+- **Retry only idempotent calls.** Transient network failures to Plaid or Postgres can be retried with exponential backoff on reads and on `/transactions/sync` (it's cursor-based, so retrying is safe). Never auto-retry `/item/public_token/exchange` or other one-shot writes.
+- **Prefer keyset pagination for new list endpoints** (`WHERE (date, transaction_id) < ($1, $2) ORDER BY date DESC, transaction_id`). Offset paging can skip or repeat rows when a sync lands mid-browse. `/api/transactions` still uses offset paging, which is acceptable for a single user.
+
+## Security
+
+- **Every route except `/healthz` requires auth, reads included.** This is private financial data, so nothing is public.
+- Keep the CSP strict. Plaid Link needs `script-src` and `frame-src https://cdn.plaid.com` and inline styles. Load nothing else from third parties.
+- Escape all server data before putting it into `innerHTML` (use `esc()` in `app.js`).
+
+## Frontend
+
+- Use the `api()` helper in `public/app.js` for every request. It throws on 4xx/5xx with the server's `error_message`; don't call `fetch` directly.
+- On mobile, use `minmax(0, 1fr)` (or `min-width: 0` on grid children) instead of a bare `1fr` next to `white-space: nowrap` content. Keep tables inside a horizontally scrolling wrapper (`.table-wrap`), and set `-webkit-text-size-adjust: 100%`.
+- Support both light and dark mode through the CSS variables in `:root`.
