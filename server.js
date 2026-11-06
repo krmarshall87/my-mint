@@ -100,6 +100,14 @@ app.use((_req, res, next) => {
 
 app.get('/healthz', (_req, res) => res.send('ok'));
 
+// Icons are served without auth: browsers and iOS home screens fetch them
+// without credentials, and they contain no data.
+const PUBLIC_ICONS = ['/favicon.ico', '/favicon.svg', '/apple-touch-icon.png'];
+app.get(PUBLIC_ICONS, (req, res) => {
+  res.set('Cache-Control', 'public, max-age=604800');
+  res.sendFile(path.join(__dirname, 'public', req.path));
+});
+
 // Lock out an IP after too many wrong passwords.
 const MAX_FAILURES = 10;
 const LOCKOUT_MS = 15 * 60 * 1000;

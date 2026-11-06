@@ -56,9 +56,7 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .masthead-inner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px; max-width: 1400px; margin: 0 auto; }
 .brand { display: flex; align-items: center; gap: 8px; color: var(--masthead-text); text-decoration: none; font-size: 22px; letter-spacing: -0.02em; }
 .brand b { color: var(--brand); font-weight: 800; }
-.brand-mark { width: 26px; height: 26px; }
-.brand-mark path { fill: var(--brand); }
-.brand-mark .vein { fill: none; stroke: var(--masthead); stroke-width: 1.6; stroke-linecap: round; }
+.brand-mark { width: 28px; height: 28px; display: block; }
 .actions { display: flex; align-items: center; gap: 12px; }
 .status { color: var(--masthead-muted); font-size: 12px; }
 .tabs { display: flex; gap: 4px; padding: 0 20px; max-width: 1400px; margin: 0 auto; overflow-x: auto; scrollbar-width: none; }
