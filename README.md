@@ -3,7 +3,8 @@
 A small personal finance app that links your bank accounts through [Plaid](https://plaid.com), in the spirit of the old Mint:
 
 - **Overview:** accounts grouped into cash, credit cards, loans and investments, with balances and net worth. Alerts for budget overages, unusual spending, large purchases and income. This month's budgets as progress bars, a 12-month cash-flow chart, and recent transactions.
-- **Transactions:** search and filter by account, category and period; export to CSV.
+- **Transactions:** search and filter by account, category and period; export to CSV. Click a category to fix it, for one transaction or as a rule ("contains *amazon* → General merchandise") that applies to past and future transactions. When Plaid has no category ("Other"), the app uses what that merchant usually is in your history, then a few built-in defaults. Guessed categories are shown in italics.
+- **Account names:** generic bank names like "CREDIT CARD" are replaced with the card's official name or "<Bank> Credit Card". Click ✎ next to an account to rename it.
 - **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
 - **Trends:** spending by category as a pie or bars, cash flow by month, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
 
@@ -71,5 +72,8 @@ All routes need Basic Auth.
 | DELETE | `/api/budgets/:category` | Remove a budget |
 | GET | `/api/budget-summary?month=YYYY-MM` | Income, spending per budgeted category, and left over for one month |
 | GET | `/api/alerts` | Current alerts, computed from your data (broken connections, budgets, unusual spending, large purchases ≥ `ALERT_LARGE_AMOUNT`, income) |
+| PUT | `/api/transactions/:id/category` | `{ "category": "TRAVEL" }` fixes one transaction (`null` resets it); add `"pattern": "amazon"` to make it a rule |
+| GET / DELETE | `/api/rules` | List rules with match counts, or delete one (`?pattern=amazon`) |
+| PATCH | `/api/accounts/:id` | `{ "nickname": "Freedom" }` renames an account (`""` clears it) |
 | GET | `/api/insights` | Totals, income and spending by month, spending by category and top merchants. Same filters as `/api/transactions`; transfers between your own accounts and credit-card payments are excluded. |
 | GET | `/api/transactions` | Filters: `q`, `account_id`, `category`, `start`, `end`, `limit`, `offset` |

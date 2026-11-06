@@ -13,6 +13,9 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 ## Data
 
 - `budgets` table: one row per category (`INCOME` = expected monthly income). Both stores implement `listBudgets`, `setBudget` and `deleteBudget`.
+- Your corrections live in their own tables, never in `transactions` (a sync would overwrite them): `category_rules` (merchant text pattern → category), `category_overrides` (one transaction → category) and `account_nicknames`. Removing a bank deletes its overrides and nicknames; rules are kept.
+- **Effective category**, computed in `categorizedTransactions()` in `server.js`, in priority order: your override, then the longest matching rule, then Plaid's category. If Plaid says `OTHER` or nothing, it falls back to what the merchant usually is in your history, then `DEFAULT_CATEGORIES`. Every read (transactions, filters, charts, budgets, alerts) goes through it, filtering in JS; the snapshot is rebuilt only after `bumpData()`, so call that after any write that changes transactions or categories.
+- **Account names:** `displayName()` in `server.js`: your nickname, then the bank's `official_name` when the name is generic or all caps, then "<Bank> <Name>". The UI shows `display_name`, never the raw `name`.
 
 ## Plaid conventions
 

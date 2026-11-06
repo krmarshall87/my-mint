@@ -120,6 +120,11 @@
             <button id="next-btn" class="btn">Older →</button>
           </div>
         </div>
+        <details id="rules-panel" class="panel rules-panel">
+          <summary class="panel-head"><h2>Category rules</h2><span id="rules-count" class="muted hint"></span></summary>
+          <p class="empty-note">Rules recategorize every transaction whose merchant contains the text, past and future. Click any category in the table to fix it or create a rule.</p>
+          <ul id="rules" class="rules"></ul>
+        </details>
       </section>
 
       <!-- ------------------------------------------------------- Budgets -->
@@ -194,6 +199,26 @@
       </section>
     </div>
   </main>
+  <dialog id="cat-dialog" class="dialog" aria-labelledby="cat-title">
+    <form id="cat-form" method="dialog">
+      <h3 id="cat-title">Change category</h3>
+      <p id="cat-merchant" class="muted"></p>
+      <label class="field">Category
+        <select name="category" required></select>
+      </label>
+      <label class="check"><input type="checkbox" name="useRule" checked /> Also apply to every transaction containing</label>
+      <input name="pattern" class="pattern" aria-label="Matching text" autocomplete="off" />
+      <p class="hint muted">Shorten it to catch more, for example <em>amazon</em> for all Amazon charges.</p>
+      <p id="cat-source" class="hint muted"></p>
+      <div class="dialog-actions">
+        <button type="button" id="cat-reset" class="link-btn" hidden>Reset to automatic</button>
+        <span class="spacer"></span>
+        <button type="button" id="cat-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="/charts.js"></script>
   <script src="/app.js"></script>
 </body>

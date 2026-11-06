@@ -173,6 +173,7 @@ async function syncItem(item) {
       // Plaid returns an empty cursor while the initial pull is still being prepared.
       if (!cursor && !added.length) return { added: 0, modified: 0, removed: 0, pending_initial_pull: true };
       await store.applySync(item.item_id, { accounts, added, modified, removed, cursor });
+      bumpData();
       return { added: added.length, modified: modified.length, removed: removed.length };
     } catch (err) {
       const code = err.response?.data?.error_code;
@@ -269,16 +270,109 @@ app.delete('/api/items/:id', async (req, res) => {
     console.error('item remove', plaidError(err));
   }
   await store.deleteItem(item.item_id);
+  bumpData();
   res.json({ ok: true });
 });
 
+// -------------------------------------------------------------- accounts --
+// Banks often name accounts generically ("CREDIT CARD", "Checking - 6709").
+// Prefer your nickname, then the bank's official product name, then
+// "<Bank> <Name>", tidied up.
+const GENERIC_NAME = /^(credit card|credit|card|checking|savings?|spending|account|money market|cd|loan|visa|mastercard)$/i;
+const titleCase = (s) => s.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+function displayName(a) {
+  if (a.nickname) return a.nickname;
+  let name = (a.name || '').trim();
+  if (a.mask) name = name.replace(new RegExp(`[\\s\\-–#x*]*${a.mask.replace(/\W/g, '')}$`, 'i'), '').trim() || name;
+  const shouting = /[A-Z]/.test(name) && name === name.toUpperCase();
+  const official = (a.official_name || '').trim();
+  if (official && (GENERIC_NAME.test(name) || shouting)) return official;
+  if (GENERIC_NAME.test(name)) return `${a.institution_name ? `${a.institution_name} ` : ''}${titleCase(name)}`;
+  return shouting ? titleCase(name) : name;
+}
+const listAccounts = async () => (await store.listAccounts()).map((a) => ({ ...a, display_name: displayName(a) }));
+
 app.get('/api/accounts', async (_req, res) => {
-  res.json(await store.listAccounts());
+  res.json(await listAccounts());
 });
 
-app.get('/api/categories', async (_req, res) => {
-  res.json(await store.listCategories());
+app.patch('/api/accounts/:id', async (req, res) => {
+  const nickname = typeof req.body?.nickname === 'string' ? req.body.nickname.trim().slice(0, 60) : null;
+  const accounts = await store.listAccounts();
+  if (!accounts.some((a) => a.account_id === req.params.id)) return res.status(404).json({ error_message: 'Unknown account' });
+  await store.setNickname(req.params.id, nickname || null);
+  res.json({ ok: true });
 });
+
+// ------------------------------------------------------------ categories --
+// Plaid's category is the starting point. On top of it, in priority order:
+// your fix for one transaction, your merchant rules, and, only when Plaid says
+// OTHER or nothing, what this merchant usually is in your own history, then a
+// few built-in defaults for common merchants.
+const isUncategorized = (c) => !c || c === 'OTHER';
+const merchantText = (t) => `${t.merchant_name || ''} ${t.name || ''}`.toLowerCase().replace(/\s+/g, ' ').trim();
+const merchantKey = (t) =>
+  (t.merchant_name || t.name || '').toLowerCase().split('*')[0].replace(/[^a-z&' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const DEFAULT_CATEGORIES = [
+  [/\b(doordash|grubhub|uber ?eats|instacart)\b/, 'FOOD_AND_DRINK'],
+  [/\b(amazon|amzn|ebay|walmart|target|costco|best ?buy|etsy)\b/, 'GENERAL_MERCHANDISE'],
+  [/\b(massage|spa|salon|barber|nails?)\b/, 'PERSONAL_CARE'],
+  [/\b(uber|lyft)\b/, 'TRANSPORTATION'],
+  [/\b(netflix|spotify|hulu|disney\+?|hbo|youtube premium)\b/, 'ENTERTAINMENT'],
+];
+
+// Everything below reads one categorized snapshot of all transactions, rebuilt
+// only after something changes (a sync, a delete, or one of your edits).
+let dataVersion = 0;
+const bumpData = () => { dataVersion += 1; };
+let snapshot = { version: -1, rows: [] };
+
+async function categorizedTransactions() {
+  if (snapshot.version === dataVersion) return snapshot.rows;
+  const version = dataVersion;
+  const [{ transactions }, rules, overrides] = await Promise.all([
+    store.listTransactions({ accountId: null, start: null, end: null, category: null, q: null, limit: 1e6, offset: 0 }),
+    store.listRules(),
+    store.listOverrides(),
+  ]);
+  const override = new Map(overrides.map((o) => [o.transaction_id, o.category]));
+  const byLength = [...rules].sort((a, b) => b.pattern.length - a.pattern.length); // most specific rule wins
+
+  // What each merchant usually is, from transactions Plaid did categorize.
+  const counts = new Map();
+  for (const t of transactions) {
+    const key = merchantKey(t);
+    if (!key || isUncategorized(t.category)) continue;
+    const m = counts.get(key) || new Map();
+    m.set(t.category, (m.get(t.category) || 0) + 1);
+    counts.set(key, m);
+  }
+  const usual = new Map([...counts].map(([key, m]) => [key, [...m].sort((a, b) => b[1] - a[1])[0][0]]));
+
+  const rows = transactions.map((t) => {
+    const text = merchantText(t);
+    let category = t.category;
+    let source = 'plaid';
+    const rule = byLength.find((r) => text.includes(r.pattern));
+    if (override.has(t.transaction_id)) { category = override.get(t.transaction_id); source = 'manual'; }
+    else if (rule) { category = rule.category; source = 'rule'; }
+    else if (isUncategorized(category)) {
+      const guess = usual.get(merchantKey(t)) || DEFAULT_CATEGORIES.find(([re]) => re.test(text))?.[1];
+      if (guess) { category = guess; source = 'inferred'; }
+    }
+    return {
+      ...t,
+      plaid_category: t.category,
+      category: category || 'OTHER',
+      // Plaid's detail only describes Plaid's own category.
+      category_detailed: source === 'plaid' ? t.category_detailed : null,
+      category_source: source,
+      rule: source === 'rule' ? rule.pattern : null,
+    };
+  });
+  if (version === dataVersion) snapshot = { version, rows };
+  return rows;
+}
 
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
 function parseFilters(q) {
@@ -287,19 +381,67 @@ function parseFilters(q) {
     start: isDate(q.start) ? q.start : null,
     end: isDate(q.end) ? q.end : null,
     category: q.category || null,
-    q: typeof q.q === 'string' && q.q.trim() ? q.q.trim() : null,
+    q: typeof q.q === 'string' && q.q.trim() ? q.q.trim().toLowerCase() : null,
   };
 }
 
+const matchesFilters = (t, f) =>
+  (!f.accountId || t.account_id === f.accountId) &&
+  (!f.start || t.date >= f.start) &&
+  (!f.end || t.date <= f.end) &&
+  (!f.category || t.category === f.category) &&
+  (!f.q || merchantText(t).includes(f.q));
+
+// Newest first, with your categories applied, filtered in JS: identical for both stores.
+const allTransactions = async (filters = {}) => (await categorizedTransactions()).filter((t) => matchesFilters(t, filters));
+
+app.get('/api/categories', async (_req, res) => {
+  res.json([...new Set((await categorizedTransactions()).map((t) => t.category))].sort());
+});
+
 app.get('/api/transactions', async (req, res) => {
   const q = req.query;
-  res.json(
-    await store.listTransactions({
-      ...parseFilters(q),
-      limit: Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 5000),
-      offset: Math.max(parseInt(q.offset, 10) || 0, 0),
-    }),
-  );
+  const rows = await allTransactions(parseFilters(q));
+  const limit = Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 5000);
+  const offset = Math.max(parseInt(q.offset, 10) || 0, 0);
+  res.json({ total: rows.length, transactions: rows.slice(offset, offset + limit) });
+});
+
+const normalizePattern = (p) => (typeof p === 'string' ? p.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80) : '');
+
+// Recategorize one transaction, or (with `pattern`) every transaction whose
+// merchant text contains it, past and future. `category: null` resets one
+// transaction to automatic.
+app.put('/api/transactions/:id/category', async (req, res) => {
+  const { category = null } = req.body || {};
+  const pattern = normalizePattern(req.body?.pattern);
+  if (category !== null && !isCategory(category)) return res.status(400).json({ error_message: 'Invalid category' });
+  const t = (await categorizedTransactions()).find((x) => x.transaction_id === req.params.id);
+  if (!t) return res.status(404).json({ error_message: 'Unknown transaction' });
+  if (pattern) {
+    if (category === null) return res.status(400).json({ error_message: 'Choose a category for the rule' });
+    if (pattern.length < 2) return res.status(400).json({ error_message: 'Make the matching text at least 2 characters' });
+    await store.setRule(pattern, category);
+    // The rule covers this transaction too, unless its text doesn't match.
+    await store.setOverride(t.transaction_id, merchantText(t).includes(pattern) ? null : category);
+  } else {
+    await store.setOverride(t.transaction_id, category);
+  }
+  bumpData();
+  res.json({ ok: true });
+});
+
+app.get('/api/rules', async (_req, res) => {
+  const [rules, rows] = await Promise.all([store.listRules(), categorizedTransactions()]);
+  res.json(rules.map((r) => ({ ...r, matches: rows.filter((t) => t.rule === r.pattern).length })));
+});
+
+app.delete('/api/rules', async (req, res) => {
+  const pattern = normalizePattern(req.query.pattern);
+  if (!pattern) return res.status(400).json({ error_message: 'Missing pattern' });
+  await store.deleteRule(pattern);
+  bumpData();
+  res.json({ ok: true });
 });
 
 // ------------------------------------------------------------- insights --
@@ -344,10 +486,6 @@ function aggregate(transactions, { includeInternal = false } = {}) {
   }
   return out;
 }
-
-const allTransactions = async (filters = {}) =>
-  (await store.listTransactions({ accountId: null, start: null, end: null, category: null, q: null, ...filters, limit: 1e6, offset: 0 }))
-    .transactions;
 
 // Chart colors follow the category, not its rank in the current view: the seven
 // biggest spending categories of all time own slots 1-7 and everything else is
@@ -502,10 +640,10 @@ app.get('/api/alerts', async (_req, res) => {
   }
 
   // Large purchases and income in the last week.
-  const accounts = new Map((await store.listAccounts()).map((a) => [a.account_id, a]));
+  const accounts = new Map((await listAccounts()).map((a) => [a.account_id, a]));
   const acctName = (id) => {
     const a = accounts.get(id);
-    return a ? `${a.institution_name ? a.institution_name + ' ' : ''}${a.name}${a.mask ? ` ••${a.mask}` : ''}` : 'your account';
+    return a ? `${a.display_name}${a.mask ? ` ••${a.mask}` : ''}` : 'your account';
   };
   for (const t of await allTransactions({ start: daysAgo(6), end: today })) {
     if (isInternalMove(t)) continue;
