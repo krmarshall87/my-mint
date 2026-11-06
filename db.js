@@ -38,48 +38,58 @@ function accountFromPlaid(a, itemId) {
   };
 }
 
-// ---------------------------------------------------------------- Postgres --
+// ------------------------------------------------- Postgres / CockroachDB --
+// Works with Postgres and CockroachDB.
+const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS items (
+    item_id TEXT PRIMARY KEY,
+    access_token TEXT NOT NULL,
+    institution_id TEXT,
+    institution_name TEXT,
+    cursor TEXT,
+    error TEXT,
+    last_synced_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS accounts (
+    account_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
+    name TEXT, official_name TEXT, mask TEXT, type TEXT, subtype TEXT,
+    current_balance NUMERIC, available_balance NUMERIC, iso_currency_code TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS transactions (
+    transaction_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    item_id TEXT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
+    date DATE NOT NULL,
+    authorized_date DATE,
+    name TEXT, merchant_name TEXT,
+    amount NUMERIC NOT NULL,
+    iso_currency_code TEXT,
+    category TEXT, category_detailed TEXT,
+    pending BOOLEAN NOT NULL DEFAULT false,
+    payment_channel TEXT, logo_url TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
+  `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
+];
+
+const SERIALIZATION_FAILURE = '40001'; // CockroachDB asks clients to retry these
+
+// SSL follows the URL's sslmode (e.g. ?sslmode=verify-full for CockroachDB Cloud).
+// PGSSL=true forces SSL without certificate verification for hosts that need it.
 class PgStore {
   constructor(url) {
     const { Pool } = require('pg');
-    const ssl = process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : false;
-    this.pool = new Pool({ connectionString: url, ssl });
+    const opts = { connectionString: url, max: 5, connectionTimeoutMillis: 10000 };
+    if (process.env.PGSSL === 'true') opts.ssl = { rejectUnauthorized: false };
+    this.pool = new Pool(opts);
+    this.pool.on('error', (err) => console.error('idle database client error', err.message));
   }
 
   async init() {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS items (
-        item_id TEXT PRIMARY KEY,
-        access_token TEXT NOT NULL,
-        institution_id TEXT,
-        institution_name TEXT,
-        cursor TEXT,
-        error TEXT,
-        last_synced_at TIMESTAMPTZ,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-      CREATE TABLE IF NOT EXISTS accounts (
-        account_id TEXT PRIMARY KEY,
-        item_id TEXT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
-        name TEXT, official_name TEXT, mask TEXT, type TEXT, subtype TEXT,
-        current_balance NUMERIC, available_balance NUMERIC, iso_currency_code TEXT
-      );
-      CREATE TABLE IF NOT EXISTS transactions (
-        transaction_id TEXT PRIMARY KEY,
-        account_id TEXT NOT NULL,
-        item_id TEXT NOT NULL REFERENCES items(item_id) ON DELETE CASCADE,
-        date DATE NOT NULL,
-        authorized_date DATE,
-        name TEXT, merchant_name TEXT,
-        amount NUMERIC NOT NULL,
-        iso_currency_code TEXT,
-        category TEXT, category_detailed TEXT,
-        pending BOOLEAN NOT NULL DEFAULT false,
-        payment_channel TEXT, logo_url TEXT
-      );
-      CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC);
-      CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id);
-    `);
+    // One statement per query: CockroachDB doesn't like several schema changes in one implicit transaction.
+    for (const sql of SCHEMA) await this.pool.query(sql);
   }
 
   async listItems() {
@@ -109,7 +119,18 @@ class PgStore {
     await this.pool.query('DELETE FROM items WHERE item_id = $1', [itemId]);
   }
 
-  async applySync(itemId, { accounts, added, modified, removed, cursor }) {
+  async applySync(itemId, batch) {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.applySyncOnce(itemId, batch);
+      } catch (err) {
+        if (err.code !== SERIALIZATION_FAILURE || attempt >= 5) throw err;
+        await new Promise((r) => setTimeout(r, 100 * 2 ** attempt));
+      }
+    }
+  }
+
+  async applySyncOnce(itemId, { accounts, added, modified, removed, cursor }) {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -183,7 +204,7 @@ class PgStore {
     }
     const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const summary = await this.pool.query(
-      `SELECT count(*)::int AS total,
+      `SELECT count(*) AS total,
               COALESCE(sum(CASE WHEN amount > 0 THEN amount END), 0)::float AS outflow,
               COALESCE(sum(CASE WHEN amount < 0 THEN -amount END), 0)::float AS inflow
        FROM transactions ${clause}`,
@@ -191,7 +212,7 @@ class PgStore {
     );
     const { rows } = await this.pool.query(
       `SELECT transaction_id, account_id, item_id,
-              to_char(date, 'YYYY-MM-DD') AS date, to_char(authorized_date, 'YYYY-MM-DD') AS authorized_date,
+              date::text AS date, authorized_date::text AS authorized_date,
               name, merchant_name, amount::float AS amount, iso_currency_code,
               category, category_detailed, pending, payment_channel, logo_url
        FROM transactions ${clause}
@@ -199,7 +220,9 @@ class PgStore {
        LIMIT ${p(f.limit)} OFFSET ${p(f.offset)}`,
       params,
     );
-    return { ...summary.rows[0], transactions: rows };
+    // count() is INT8, which node-pg returns as a string.
+    const { total, outflow, inflow } = summary.rows[0];
+    return { total: Number(total), outflow: Number(outflow), inflow: Number(inflow), transactions: rows };
   }
 }
 
