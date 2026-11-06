@@ -42,7 +42,7 @@ Many large US banks link through OAuth, which redirects back to your app. To sup
 ### Notes
 
 - **Production access:** you need Plaid production approval for the Transactions product. Some institutions also need extra OAuth registration in the dashboard; it can take a few days.
-- **Database plan:** the blueprint uses Render's `basic-256mb` Postgres plan. Free Render Postgres databases expire after 30 days, so they're a poor fit for long-lived data.
+- **Database plan:** the blueprint uses Render's `0.1c-256mb` Postgres plan (the cheapest paid one). Free Render Postgres databases expire after 30 days, so they're a poor fit for long-lived data.
 - **Security:** the database is reachable only on Render's private network (`ipAllowList: []`). Never commit `.env`.
 - **Sandbox → production:** when you switch `PLAID_ENV`, remove the sandbox institutions in the UI first. Their tokens don't work in production.
 - **Money in/out totals** include transfers between your own accounts and credit-card payments. Filter by category to exclude them.
