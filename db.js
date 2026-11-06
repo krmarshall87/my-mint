@@ -75,6 +75,20 @@ const SCHEMA = [
     amount NUMERIC NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
+  // Your corrections: rules match merchant text; overrides pin one transaction.
+  `CREATE TABLE IF NOT EXISTS category_rules (
+    pattern TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  `CREATE TABLE IF NOT EXISTS category_overrides (
+    transaction_id TEXT PRIMARY KEY,
+    category TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS account_nicknames (
+    account_id TEXT PRIMARY KEY,
+    nickname TEXT NOT NULL
+  )`,
   `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
   `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
 ];
@@ -121,6 +135,8 @@ class PgStore {
   }
 
   async deleteItem(itemId) {
+    await this.pool.query('DELETE FROM category_overrides WHERE transaction_id IN (SELECT transaction_id FROM transactions WHERE item_id = $1)', [itemId]);
+    await this.pool.query('DELETE FROM account_nicknames WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM items WHERE item_id = $1', [itemId]);
   }
 
@@ -178,7 +194,8 @@ class PgStore {
 
   async listAccounts() {
     const { rows } = await this.pool.query(
-      `SELECT a.*, i.institution_name FROM accounts a JOIN items i USING (item_id)
+      `SELECT a.*, i.institution_name, n.nickname FROM accounts a JOIN items i USING (item_id)
+       LEFT JOIN account_nicknames n USING (account_id)
        ORDER BY i.institution_name, a.name`,
     );
     return rows.map((r) => ({
@@ -186,6 +203,52 @@ class PgStore {
       current_balance: r.current_balance === null ? null : Number(r.current_balance),
       available_balance: r.available_balance === null ? null : Number(r.available_balance),
     }));
+  }
+
+  async listRules() {
+    const { rows } = await this.pool.query('SELECT pattern, category FROM category_rules ORDER BY pattern');
+    return rows;
+  }
+
+  async setRule(pattern, category) {
+    await this.pool.query(
+      `INSERT INTO category_rules (pattern, category) VALUES ($1, $2)
+       ON CONFLICT (pattern) DO UPDATE SET category = EXCLUDED.category`,
+      [pattern, category],
+    );
+  }
+
+  async deleteRule(pattern) {
+    await this.pool.query('DELETE FROM category_rules WHERE pattern = $1', [pattern]);
+  }
+
+  async listOverrides() {
+    const { rows } = await this.pool.query('SELECT transaction_id, category FROM category_overrides');
+    return rows;
+  }
+
+  async setOverride(transactionId, category) {
+    if (category === null) {
+      await this.pool.query('DELETE FROM category_overrides WHERE transaction_id = $1', [transactionId]);
+    } else {
+      await this.pool.query(
+        `INSERT INTO category_overrides (transaction_id, category) VALUES ($1, $2)
+         ON CONFLICT (transaction_id) DO UPDATE SET category = EXCLUDED.category`,
+        [transactionId, category],
+      );
+    }
+  }
+
+  async setNickname(accountId, nickname) {
+    if (nickname === null) {
+      await this.pool.query('DELETE FROM account_nicknames WHERE account_id = $1', [accountId]);
+    } else {
+      await this.pool.query(
+        `INSERT INTO account_nicknames (account_id, nickname) VALUES ($1, $2)
+         ON CONFLICT (account_id) DO UPDATE SET nickname = EXCLUDED.nickname`,
+        [accountId, nickname],
+      );
+    }
   }
 
   async listBudgets() {
@@ -289,8 +352,8 @@ class FileStore {
 
   async deleteItem(itemId) {
     delete this.data.items[itemId];
-    for (const [k, v] of Object.entries(this.data.accounts)) if (v.item_id === itemId) delete this.data.accounts[k];
-    for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) delete this.data.transactions[k];
+    for (const [k, v] of Object.entries(this.data.accounts)) if (v.item_id === itemId) { delete this.data.accounts[k]; delete this.data.nicknames?.[k]; }
+    for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) { delete this.data.transactions[k]; delete this.data.overrides?.[k]; }
     this.save();
   }
 
@@ -304,8 +367,42 @@ class FileStore {
 
   async listAccounts() {
     return Object.values(this.data.accounts)
-      .map((a) => ({ ...a, institution_name: this.data.items[a.item_id]?.institution_name }))
+      .map((a) => ({ ...a, institution_name: this.data.items[a.item_id]?.institution_name, nickname: this.data.nicknames?.[a.account_id] ?? null }))
       .sort((a, b) => `${a.institution_name}${a.name}`.localeCompare(`${b.institution_name}${b.name}`));
+  }
+
+  async listRules() {
+    return Object.entries(this.data.rules || {})
+      .map(([pattern, category]) => ({ pattern, category }))
+      .sort((a, b) => a.pattern.localeCompare(b.pattern));
+  }
+
+  async setRule(pattern, category) {
+    (this.data.rules ||= {})[pattern] = category;
+    this.save();
+  }
+
+  async deleteRule(pattern) {
+    if (this.data.rules) delete this.data.rules[pattern];
+    this.save();
+  }
+
+  async listOverrides() {
+    return Object.entries(this.data.overrides || {}).map(([transaction_id, category]) => ({ transaction_id, category }));
+  }
+
+  async setOverride(transactionId, category) {
+    this.data.overrides ||= {};
+    if (category === null) delete this.data.overrides[transactionId];
+    else this.data.overrides[transactionId] = category;
+    this.save();
+  }
+
+  async setNickname(accountId, nickname) {
+    this.data.nicknames ||= {};
+    if (nickname === null) delete this.data.nicknames[accountId];
+    else this.data.nicknames[accountId] = nickname;
+    this.save();
   }
 
   async listBudgets() {

@@ -24,6 +24,10 @@ const SPENDING_CATEGORIES = [
   'GOVERNMENT_AND_NON_PROFIT', 'HOME_IMPROVEMENT', 'LOAN_PAYMENTS', 'MEDICAL', 'PERSONAL_CARE',
   'RENT_AND_UTILITIES', 'TRANSPORTATION', 'TRAVEL',
 ];
+const ALL_CATEGORIES = [...SPENDING_CATEGORIES, 'INCOME', 'TRANSFER_IN', 'TRANSFER_OUT', 'OTHER'];
+const acctLabel = (a) => `${a.display_name}${a.mask ? ` ••${a.mask}` : ''}`;
+// Transactions currently on screen, so the category dialog can find them.
+const txById = new Map();
 
 // Per-viewer conveniences only; the page works the same without storage.
 const prefs = {
@@ -139,7 +143,7 @@ function renderAccounts() {
       </button>
       <ul class="acct-list">${accts
         .map((a) => `<li class="acct ${a.account_id === selected ? 'active' : ''}" data-account="${esc(a.account_id)}" tabindex="0">
-          <span class="acct-name">${esc(a.name)}<small>${esc(a.institution_name)}${a.mask ? ` ••${esc(a.mask)}` : ''}</small></span>
+          <span class="acct-name">${esc(a.display_name)}<button class="rename" data-rename="${esc(a.account_id)}" title="Rename" aria-label="Rename ${esc(a.display_name)}">✎</button><small>${esc(a.institution_name)}${a.mask ? ` ••${esc(a.mask)}` : ''}</small></span>
           <span class="acct-bal ${signedBalance(a) < 0 ? 'neg' : ''}">${a.current_balance == null ? '—' : money(signedBalance(a), a.iso_currency_code)}<small class="muted">${esc(ago(itemById[a.item_id]?.last_synced_at))}</small></span>
         </li>`)
         .join('')}</ul>
@@ -160,7 +164,7 @@ function renderAccounts() {
 
   const sel = filtersForm.account_id;
   sel.innerHTML = '<option value="">All accounts</option>' + state.accounts
-    .map((a) => `<option value="${esc(a.account_id)}">${esc(a.institution_name)} · ${esc(a.name)}${a.mask ? ` ••${esc(a.mask)}` : ''}</option>`)
+    .map((a) => `<option value="${esc(a.account_id)}">${esc(acctLabel(a))}</option>`)
     .join('');
   sel.value = selected;
 }
@@ -303,8 +307,17 @@ function renderCashflow(chartEl, tableEl, months) {
   });
 }
 
+const SOURCE_NOTE = {
+  manual: 'You set this category.',
+  rule: (t) => `Set by your rule “${t.rule}”.`,
+  inferred: 'Guessed: Plaid had no category, so this is based on the merchant.',
+  plaid: 'Category from your bank, via Plaid.',
+};
+const sourceNote = (t) => { const n = SOURCE_NOTE[t.category_source] || SOURCE_NOTE.plaid; return typeof n === 'function' ? n(t) : n; };
+
 function txRow(t, acctById) {
   const a = acctById[t.account_id];
+  txById.set(t.transaction_id, t);
   // Plaid: positive amount = money leaving the account.
   const out = t.amount > 0;
   return `<tr>
@@ -314,8 +327,8 @@ function txRow(t, acctById) {
       ${esc(t.merchant_name || t.name)}${t.pending ? '<span class="badge">pending</span>' : ''}
       ${t.merchant_name && t.merchant_name !== t.name ? `<div class="sub">${esc(t.name)}</div>` : ''}
     </td>
-    <td class="cat">${esc(prettyCat(t.category))}</td>
-    <td>${a ? `${esc(a.name)}${a.mask ? ` ••${esc(a.mask)}` : ''}` : ''}</td>
+    <td class="cat"><button type="button" class="cat-btn ${esc(t.category_source)}" data-tx="${esc(t.transaction_id)}" title="${esc(sourceNote(t))} Click to change.">${esc(prettyCat(t.category))}</button></td>
+    <td>${a ? esc(acctLabel(a)) : ''}</td>
     <td class="num ${out ? 'neg' : 'pos'}">${out ? '−' : '+'}${money(Math.abs(t.amount), t.iso_currency_code)}</td>
   </tr>`;
 }
@@ -370,9 +383,79 @@ async function loadTransactionsPage() {
 
 async function loadTransactions() {
   await withLoading($('#view-transactions'), () =>
-    Promise.all([loadTransactionsPage(), api(`/api/insights?${currentQuery()}`).then(renderTiles)]),
+    Promise.all([loadTransactionsPage(), api(`/api/insights?${currentQuery()}`).then(renderTiles), loadRules()]),
   );
 }
+
+// ------------------------------------------------------ Category editing --
+async function loadRules() {
+  const rules = await api('/api/rules');
+  $('#rules-count').textContent = rules.length ? `${rules.length} rule${rules.length === 1 ? '' : 's'}` : 'none yet';
+  const list = $('#rules');
+  list.replaceChildren();
+  for (const r of rules) {
+    const li = el('li', { class: 'rule-row' });
+    const text = el('span');
+    text.append('Contains ', el('strong', {}, `“${r.pattern}”`), ' → ', el('strong', {}, prettyCat(r.category)));
+    li.appendChild(text);
+    li.appendChild(el('span', { class: 'muted' }, `${r.matches} transaction${r.matches === 1 ? '' : 's'}`));
+    const del = el('button', { class: 'link-btn danger', type: 'button' }, 'Delete');
+    del.addEventListener('click', async () => {
+      if (!confirm(`Delete the rule for “${r.pattern}”? Its transactions go back to automatic categories.`)) return;
+      await api(`/api/rules?pattern=${encodeURIComponent(r.pattern)}`, { method: 'DELETE' });
+      await afterCategoryChange();
+    });
+    li.appendChild(del);
+    list.appendChild(li);
+  }
+}
+
+// A starting point for a rule: the merchant text without card-reference noise.
+const suggestPattern = (t) =>
+  (t.merchant_name || t.name || '').toLowerCase().split('*')[0].replace(/\d[\d-]*/g, ' ').replace(/[#]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s-]+|[\s-]+$/g, '').trim();
+
+let editing = null;
+function openCategoryDialog(t) {
+  editing = t;
+  const form = $('#cat-form');
+  $('#cat-merchant').textContent = `${t.merchant_name || t.name} · ${shortDate(t.date)} · ${money(Math.abs(t.amount), t.iso_currency_code)}`;
+  const options = [...new Set([...ALL_CATEGORIES, ...state.categories])].sort((a, b) => prettyCat(a).localeCompare(prettyCat(b)));
+  form.category.innerHTML = options.map((c) => `<option value="${esc(c)}">${esc(prettyCat(c))}</option>`).join('');
+  form.category.value = t.category;
+  form.useRule.checked = t.category_source !== 'manual';
+  form.pattern.value = t.rule || suggestPattern(t);
+  form.pattern.disabled = !form.useRule.checked;
+  $('#cat-source').textContent = sourceNote(t);
+  $('#cat-reset').hidden = t.category_source !== 'manual';
+  $('#cat-dialog').showModal();
+  form.category.focus();
+}
+
+async function afterCategoryChange() {
+  await loadCategories();
+  await route();
+}
+
+async function saveCategory(body) {
+  try {
+    await api(`/api/transactions/${encodeURIComponent(editing.transaction_id)}/category`, { method: 'PUT', body });
+    $('#cat-dialog').close();
+    await afterCategoryChange();
+  } catch (e) { alert(e.message); }
+}
+
+$('#cat-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const f = e.target;
+  saveCategory({ category: f.category.value, pattern: f.useRule.checked ? f.pattern.value : '' });
+});
+$('#cat-form').useRule.addEventListener('change', (e) => { $('#cat-form').pattern.disabled = !e.target.checked; });
+$('#cat-cancel').addEventListener('click', () => $('#cat-dialog').close());
+$('#cat-reset').addEventListener('click', () => saveCategory({ category: null }));
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.cat-btn');
+  if (btn && txById.has(btn.dataset.tx)) openCategoryDialog(txById.get(btn.dataset.tx));
+});
 
 // ---------------------------------------------------------------- Budgets --
 function renderMonthChips() {
@@ -642,7 +725,7 @@ async function exportCsv() {
   const rows = [['Date', 'Description', 'Merchant', 'Category', 'Account', 'Amount', 'Currency', 'Pending']];
   for (const t of data.transactions) {
     const a = acctById[t.account_id];
-    rows.push([t.date, t.name, t.merchant_name || '', prettyCat(t.category), a ? `${a.institution_name} ${a.name}` : '', -t.amount, t.iso_currency_code || '', t.pending]);
+    rows.push([t.date, t.name, t.merchant_name || '', prettyCat(t.category), a ? acctLabel(a) : '', -t.amount, t.iso_currency_code || '', t.pending]);
   }
   const csv = rows.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
   const link = document.createElement('a');
@@ -680,6 +763,16 @@ $('#next-btn').addEventListener('click', () => { state.offset += PAGE_SIZE; load
 $('#restore-alerts').addEventListener('click', () => { prefs.set('dismissed_alerts', []); loadOverview(); });
 
 $('#accounts').addEventListener('click', async (e) => {
+  const rename = e.target.closest('[data-rename]');
+  if (rename) {
+    e.stopPropagation();
+    const a = state.accounts.find((x) => x.account_id === rename.dataset.rename);
+    const name = prompt('Account name (leave empty to use the bank’s name):', a?.nickname || a?.display_name || '');
+    if (name === null) return;
+    await api(`/api/accounts/${encodeURIComponent(rename.dataset.rename)}`, { method: 'PATCH', body: { nickname: name } });
+    await refreshAll();
+    return;
+  }
   const toggle = e.target.closest('[data-toggle]');
   const acct = e.target.closest('[data-account]');
   const remove = e.target.closest('[data-remove]');

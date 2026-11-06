@@ -272,3 +272,35 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
   .ov-budget .bar { width: 26%; }
   .ov-budget th, .ov-budget td { padding: 8px 8px; }
 }
+
+/* ----------------------------------------------------- Category editing -- */
+.cat-btn { background: none; border: 0; padding: 2px 6px; margin: -2px -6px; border-radius: 5px; color: var(--muted); font: inherit; text-align: left; cursor: pointer; }
+.cat-btn:hover, .cat-btn:focus-visible { background: var(--hover-wash); color: var(--text); outline: none; box-shadow: 0 0 0 1px var(--border) inset; }
+.cat-btn::after { content: " ▾"; font-size: 10px; opacity: 0; }
+.cat-btn:hover::after, .cat-btn:focus-visible::after { opacity: .7; }
+.cat-btn.inferred { font-style: italic; }
+.cat-btn.rule, .cat-btn.manual { color: var(--text); }
+
+.rename { background: none; border: 0; padding: 0 0 0 6px; color: var(--muted); font-size: 12px; opacity: 0; cursor: pointer; }
+.acct:hover .rename, .rename:focus-visible { opacity: 1; }
+@media (hover: none) { .rename { opacity: .6; } }
+
+.dialog { border: 1px solid var(--border); border-radius: 10px; padding: 0; background: var(--panel); color: var(--text); width: min(440px, calc(100vw - 32px)); box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+.dialog::backdrop { background: rgba(10, 15, 13, .45); }
+.dialog form { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+.dialog h3 { margin: 0; font-size: 16px; }
+.dialog p { margin: 0; }
+.dialog .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+.dialog select, .dialog .pattern { width: 100%; }
+.dialog .check { display: flex; gap: 8px; align-items: center; font-size: 13px; margin-top: 4px; }
+.dialog .pattern:disabled { opacity: .5; }
+.dialog .hint { font-size: 12px; }
+.dialog-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.dialog-actions .spacer { flex: 1; }
+
+.rules-panel > summary { cursor: pointer; list-style: none; }
+.rules-panel > summary::-webkit-details-marker { display: none; }
+.rules-panel:not([open]) > summary { border-bottom: 0; }
+.rules { list-style: none; margin: 0; padding: 0 0 6px; }
+.rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); font-size: 13px; }
+.rule-row strong { overflow-wrap: anywhere; }
