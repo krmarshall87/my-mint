@@ -7,7 +7,7 @@ A small personal app that links your bank accounts through [Plaid](https://plaid
 - **Auth:** HTTP Basic Auth on every page and API route. The username can be anything; the password is `APP_PASSWORD`. After 10 wrong passwords, that IP address is locked out for 15 minutes.
 - **Security:** Plaid access tokens are encrypted in the database with `ENCRYPTION_KEY` (AES-256-GCM). Strict security headers (CSP, HSTS) and `no-store` caching are set on every response.
 
-Transactions are pulled incrementally with `/transactions/sync`: each linked institution keeps a cursor, and only changes since the last sync are fetched. A sync runs when the page loads, when you click **Refresh**, and in the background every `SYNC_INTERVAL_HOURS` hours (default 6). When you first link an account, up to 24 months of history is requested.
+Transactions are pulled incrementally with `/transactions/sync`: each linked institution keeps a cursor, and only changes since the last sync are fetched. A sync runs when the page loads, when you click **Refresh**, and in the background every `SYNC_INTERVAL_HOURS` hours (default 6). On Render's free plan the service sleeps after about 15 idle minutes, so background syncs only run while it's awake; opening the page still syncs. When you first link an account, up to 24 months of history is requested.
 
 ## Run locally
 
