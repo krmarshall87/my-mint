@@ -1,6 +1,13 @@
 # My Mint
 
-A small personal app that links your bank accounts through [Plaid](https://plaid.com) and shows all of their transactions in one place. You can search, filter by account, category and date, and export to CSV. Charts show cash flow by month, spending by category and top merchants; they follow the same filters. Click a category or merchant to filter by it.
+A small personal finance app that links your bank accounts through [Plaid](https://plaid.com), in the spirit of the old Mint:
+
+- **Overview:** accounts grouped into cash, credit cards, loans and investments, with balances and net worth. Alerts for budget overages, unusual spending, large purchases and income. This month's budgets as progress bars, a 12-month cash-flow chart, and recent transactions.
+- **Transactions:** search and filter by account, category and period; export to CSV.
+- **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
+- **Trends:** spending by category as a pie or bars, cash flow by month, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
+
+Income counts only deposits that Plaid categorizes as `INCOME`. Other money in is a refund and reduces spending. Transfers between your own accounts and credit-card payments are left out of both.
 
 - **Backend:** Node + Express, using the official `plaid` SDK. It calls `/link/token/create`, `/item/public_token/exchange` and `/transactions/sync`.
 - **Storage:** CockroachDB (or any Postgres) when `DATABASE_URL` is set. Tables are created automatically on startup. Without it, data goes to a local JSON file (`data/store.json`) for development.
@@ -59,5 +66,10 @@ All routes need Basic Auth.
 | DELETE | `/api/items/:id` | Remove an Item from Plaid and delete its stored data |
 | GET | `/api/accounts` | List accounts with balances |
 | GET | `/api/categories` | List categories that appear in your transactions |
+| GET | `/api/budgets` | List budgets (`INCOME` is the expected monthly income) |
+| PUT | `/api/budgets/:category` | Create or update a monthly budget: `{ "amount": 400 }` |
+| DELETE | `/api/budgets/:category` | Remove a budget |
+| GET | `/api/budget-summary?month=YYYY-MM` | Income, spending per budgeted category, and left over for one month |
+| GET | `/api/alerts` | Current alerts, computed from your data (broken connections, budgets, unusual spending, large purchases ≥ `ALERT_LARGE_AMOUNT`, income) |
 | GET | `/api/insights` | Totals, income and spending by month, spending by category and top merchants. Same filters as `/api/transactions`; transfers between your own accounts and credit-card payments are excluded. |
 | GET | `/api/transactions` | Filters: `q`, `account_id`, `category`, `start`, `end`, `limit`, `offset` |

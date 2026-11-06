@@ -155,10 +155,11 @@
       const li = el('li', { class: 'bar-row' + (r.onClick ? ' clickable' : ''), tabindex: 0, 'aria-label': `${r.label}: ${format(r.value)} (${share}%)` });
       li.appendChild(el('span', { class: 'bar-label' }, r.label));
       const track = el('span', { class: 'bar-track' });
-      track.appendChild(el('span', { class: 'bar-fill', style: `width:${Math.max(0.5, (r.value / max) * 100)}%;background:${color}` }));
+      const c = r.color || color;
+      track.appendChild(el('span', { class: 'bar-fill', style: `width:${Math.max(0.5, (r.value / max) * 100)}%;background:${c}` }));
       li.appendChild(track);
       li.appendChild(el('span', { class: 'bar-value' }, format(r.value)));
-      const rowsFor = () => [{ color, value: format(r.value), label: `${share}% of spending` }, ...(r.sub ? [{ value: '', label: r.sub }] : [])];
+      const rowsFor = () => [{ color: c, value: format(r.value), label: `${share}% of spending` }, ...(r.sub ? [{ value: '', label: r.sub }] : [])];
       li.addEventListener('pointermove', (e) => tip.show(rowsFor(), r.label, e.clientX, e.clientY));
       li.addEventListener('focus', () => tip.show(rowsFor(), r.label, ...anchorOf(li)));
       li.addEventListener('pointerleave', () => tip.hide());
@@ -170,6 +171,84 @@
       list.appendChild(li);
     }
     container.appendChild(list);
+  }
+
+
+  // ------------------------------------------------------------- donut ------
+  // slices: [{ label, value, color, onClick? }]. Part-to-whole at a glance; the
+  // legend beside it carries every name, amount and share (never color alone).
+  function donut(container, { slices, format, centerLabel = 'total' }) {
+    const card = container.closest('.chart-card');
+    const tip = tooltip(card);
+    container.replaceChildren();
+    const total = slices.reduce((s, x) => s + x.value, 0);
+    if (!slices.length || !(total > 0)) {
+      container.appendChild(el('p', { class: 'chart-empty muted' }, 'No spending for these filters.'));
+      return;
+    }
+    const wrap = el('div', { class: 'donut-wrap' });
+    const size = 240, r = size / 2 - 4, inner = r * 0.62, cx = size / 2, cy = size / 2;
+    const svg = el('svg:svg', { width: size, height: size, viewBox: `0 0 ${size} ${size}`, role: 'img', 'aria-label': container.dataset.label || 'Spending by category', class: 'donut' });
+    const pt = (rad, a) => [cx + rad * Math.sin(a), cy - rad * Math.cos(a)];
+    const arc = (a0, a1) => {
+      if (a1 - a0 >= Math.PI * 2 - 1e-6) a1 = a0 + Math.PI * 2 - 1e-4; // a single full slice
+      const large = a1 - a0 > Math.PI ? 1 : 0;
+      const [x0, y0] = pt(r, a0), [x1, y1] = pt(r, a1), [x2, y2] = pt(inner, a1), [x3, y3] = pt(inner, a0);
+      return `M${x0},${y0}A${r},${r} 0 ${large} 1 ${x1},${y1}L${x2},${y2}A${inner},${inner} 0 ${large} 0 ${x3},${y3}Z`;
+    };
+    const legend = el('ol', { class: 'donut-legend' });
+    const paths = [], rows = [];
+    const focus = (i) => {
+      paths.forEach((p, j) => p.classList.toggle('dim', i !== null && j !== i));
+      rows.forEach((row, j) => row.classList.toggle('active', j === i));
+    };
+    let a = 0;
+    slices.forEach((s, i) => {
+      const a1 = a + (s.value / total) * Math.PI * 2;
+      const share = Math.round((s.value / total) * 100);
+      const path = el('svg:path', { d: arc(a, a1), style: `fill:${s.color}`, class: 'slice', tabindex: 0, 'aria-label': `${s.label}: ${format(s.value)}, ${share}%` });
+      a = a1;
+      const rowsFor = () => [{ color: s.color, value: format(s.value), label: `${share}% of spending` }];
+      path.addEventListener('pointermove', (e) => { focus(i); tip.show(rowsFor(), s.label, e.clientX, e.clientY); });
+      path.addEventListener('focus', () => { focus(i); tip.show(rowsFor(), s.label, ...anchorOf(path)); });
+      const off = () => { focus(null); tip.hide(); };
+      path.addEventListener('pointerleave', off);
+      path.addEventListener('blur', off);
+      svg.appendChild(path);
+      paths.push(path);
+
+      const li = el('li', { class: 'legend-row' + (s.onClick ? ' clickable' : '') });
+      li.appendChild(el('span', { class: 'swatch', style: `background:${s.color}` }));
+      li.appendChild(el('span', { class: 'legend-name' }, s.label));
+      li.appendChild(el('span', { class: 'legend-value' }, format(s.value)));
+      li.appendChild(el('span', { class: 'legend-share muted' }, `${share}%`));
+      li.addEventListener('pointerenter', () => focus(i));
+      li.addEventListener('pointerleave', () => focus(null));
+      if (s.onClick) {
+        li.tabIndex = 0;
+        li.addEventListener('click', s.onClick);
+        li.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); s.onClick(); } });
+        path.addEventListener('click', s.onClick);
+        path.classList.add('clickable');
+      }
+      legend.appendChild(li);
+      rows.push(li);
+    });
+    svg.appendChild(el('svg:text', { x: cx, y: cy - 2, 'text-anchor': 'middle', class: 'donut-total' }, format(total)));
+    svg.appendChild(el('svg:text', { x: cx, y: cy + 18, 'text-anchor': 'middle', class: 'donut-sub' }, centerLabel));
+    wrap.appendChild(svg);
+    wrap.appendChild(legend);
+    container.appendChild(wrap);
+  }
+
+  // -------------------------------------------------------------- meter -----
+  // A budget bar: fill = spent / limit, colored by status, with an optional
+  // "today" marker showing how far through the month we are.
+  function meter({ value, max, status, marker }) {
+    const bar = el('div', { class: `meter ${status}`, role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': max, 'aria-valuenow': value });
+    bar.appendChild(el('span', { class: 'meter-fill', style: `width:${max > 0 ? Math.min(100, (value / max) * 100) : 0}%` }));
+    if (marker != null && marker > 0 && marker < 1) bar.appendChild(el('span', { class: 'meter-today', style: `left:${marker * 100}%`, title: 'Today' }));
+    return bar;
   }
 
   // ------------------------------------------------------------ table view --
@@ -190,5 +269,5 @@
     container.appendChild(t);
   }
 
-  window.Charts = { columns, bars, table };
+  window.Charts = { columns, bars, donut, meter, table, el };
 })();

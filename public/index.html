@@ -8,81 +8,187 @@
   <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <h1>My Mint</h1>
-    <div class="actions">
-      <span id="status" class="muted"></span>
-      <button id="sync-btn" class="secondary">Refresh</button>
-      <button id="link-btn">+ Link account</button>
+  <header class="masthead">
+    <div class="masthead-inner">
+      <a class="brand" href="#overview" aria-label="My Mint home">
+        <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 19c0-8 5-14 15-15-1 10-7 15-15 15Z" /><path class="vein" d="M5 19 14 10" /></svg>
+        <span>my<b>mint</b></span>
+      </a>
+      <div class="actions">
+        <span id="status" class="status"></span>
+        <button id="link-btn" class="btn-primary">+ Add account</button>
+      </div>
     </div>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#overview" data-view="overview">Overview</a>
+      <a href="#transactions" data-view="transactions">Transactions</a>
+      <a href="#budgets" data-view="budgets">Budgets</a>
+      <a href="#trends" data-view="trends">Trends</a>
+    </nav>
   </header>
 
   <main class="layout">
-    <aside class="sidebar">
-      <h2>Accounts</h2>
-      <ul id="accounts" class="accounts"></ul>
-      <p id="no-accounts" class="muted" hidden>No accounts linked yet. Click <strong>+ Link account</strong> to connect a bank.</p>
+    <!-- ------------------------------------------------------- Accounts -->
+    <aside class="sidebar panel">
+      <div class="panel-head">
+        <h2>Accounts</h2>
+        <button id="sync-btn" class="link-btn" title="Fetch the latest from your banks">↻ Update</button>
+      </div>
+      <div id="accounts"></div>
+      <div id="net-worth-row" class="net-worth" hidden>
+        <span>Net worth</span><strong id="net-worth"></strong>
+      </div>
+      <p id="no-accounts" class="empty-note" hidden>No accounts yet. Click <strong>+ Add account</strong> to connect a bank.</p>
     </aside>
 
-    <section class="content">
-      <form id="filters" class="filters">
-        <input type="search" name="q" placeholder="Search merchant or description" />
-        <select name="account_id"><option value="">All accounts</option></select>
-        <select name="category"><option value="">All categories</option></select>
-        <label>From <input type="date" name="start" /></label>
-        <label>To <input type="date" name="end" /></label>
-        <button type="button" id="export-btn" class="secondary">Export CSV</button>
+    <div class="content">
+      <!-- Filters scope the Transactions and Trends views. -->
+      <form id="filters" class="filters" hidden>
+        <input type="search" name="q" placeholder="Search merchant or description" aria-label="Search" />
+        <select name="account_id" aria-label="Account"><option value="">All accounts</option></select>
+        <select name="category" aria-label="Category"><option value="">All categories</option></select>
+        <select name="period" aria-label="Period">
+          <option value="">All time</option>
+          <option value="this-month">This month</option>
+          <option value="last-month">Last month</option>
+          <option value="last-3">Last 3 months</option>
+          <option value="last-12">Last 12 months</option>
+          <option value="this-year">This year</option>
+          <option value="last-year">Last year</option>
+          <option value="custom">Custom…</option>
+        </select>
+        <label class="date-field">From <input type="date" name="start" /></label>
+        <label class="date-field">To <input type="date" name="end" /></label>
       </form>
 
-      <div id="insights" class="insights">
-        <div class="summary">
-          <div><span class="muted">Income</span><strong id="sum-in">$0</strong></div>
-          <div><span class="muted">Spending</span><strong id="sum-out">$0</strong></div>
-          <div><span class="muted">Net</span><strong id="sum-net">$0</strong></div>
-          <div><span class="muted">Transactions</span><strong id="sum-count">0</strong></div>
+      <!-- ------------------------------------------------------ Overview -->
+      <section id="view-overview" class="view" hidden>
+        <div class="panel">
+          <div class="panel-head"><h2>Alerts</h2><button id="restore-alerts" class="link-btn" hidden>Show dismissed</button></div>
+          <ul id="alerts" class="alerts"></ul>
         </div>
-        <p id="excluded-note" class="note muted" hidden></p>
 
-        <section class="chart-card">
-          <header class="chart-head">
-            <h3>Cash flow by month</h3>
+        <div class="panel">
+          <div class="panel-head"><h2>Budget <span id="ov-budget-month" class="muted"></span></h2><a href="#budgets" class="link-btn">See all budgets →</a></div>
+          <div id="ov-budget" class="ov-budget"></div>
+        </div>
+
+        <div class="panel chart-card">
+          <div class="panel-head">
+            <h2>Cash flow · last 12 months</h2>
             <ul class="legend">
               <li><span class="swatch" style="background:var(--series-1)"></span>Income</li>
               <li><span class="swatch" style="background:var(--series-2)"></span>Spending</li>
             </ul>
-          </header>
-          <div id="chart-months" class="chart" data-label="Income and spending by month"></div>
-          <details class="chart-table"><summary>View as table</summary><div id="table-months"></div></details>
-        </section>
+          </div>
+          <div class="panel-body">
+            <div id="ov-cashflow" class="chart" data-label="Income and spending by month, last 12 months"></div>
+            <details class="chart-table"><summary>View as table</summary><div id="ov-cashflow-table"></div></details>
+          </div>
+        </div>
 
-        <div class="chart-grid">
-          <section class="chart-card">
-            <header class="chart-head"><h3>Spending by category</h3><span class="muted hint">Click to filter</span></header>
-            <div id="chart-categories" class="chart"></div>
+        <div class="panel">
+          <div class="panel-head"><h2>Recent transactions</h2><a href="#transactions" class="link-btn">See all →</a></div>
+          <div class="table-wrap"><table class="tx-table"><tbody id="ov-recent"></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- -------------------------------------------------- Transactions -->
+      <section id="view-transactions" class="view" hidden>
+        <div class="summary">
+          <div><span>Income</span><strong id="sum-in">$0</strong></div>
+          <div><span>Spending</span><strong id="sum-out">$0</strong></div>
+          <div><span>Net</span><strong id="sum-net">$0</strong></div>
+          <div><span>Transactions</span><strong id="sum-count">0</strong></div>
+        </div>
+        <p id="excluded-note" class="note muted" hidden></p>
+        <div class="panel">
+          <div class="panel-head"><h2>Transactions</h2><button type="button" id="export-btn" class="link-btn">Export CSV</button></div>
+          <div class="table-wrap">
+            <table class="tx-table">
+              <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Account</th><th class="num">Amount</th></tr></thead>
+              <tbody id="tx-body"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <button id="prev-btn" class="btn">← Newer</button>
+            <span id="page-info" class="muted"></span>
+            <button id="next-btn" class="btn">Older →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ------------------------------------------------------- Budgets -->
+      <section id="view-budgets" class="view" hidden>
+        <div class="budget-top">
+          <h1 id="budget-title">Budgets</h1>
+          <div id="month-chips" class="month-chips" role="tablist" aria-label="Month"></div>
+        </div>
+        <div class="budget-layout">
+          <div class="budget-main">
+            <div class="panel">
+              <div class="panel-head"><h2>Income</h2><strong id="income-head" class="head-figure"></strong></div>
+              <div id="budget-income" class="budget-rows"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>Spending</h2><strong id="spending-head" class="head-figure"></strong></div>
+              <div id="budget-spending" class="budget-rows"></div>
+              <form id="add-budget" class="add-budget">
+                <select name="category" aria-label="Category" required></select>
+                <input name="amount" type="number" min="1" step="1" placeholder="Monthly limit" aria-label="Monthly limit" required />
+                <button class="btn-primary" type="submit">+ Add a budget</button>
+              </form>
+            </div>
+          </div>
+          <aside class="panel budget-summary">
+            <div class="panel-head"><h2>Your budgets</h2></div>
+            <dl id="budget-summary"></dl>
+          </aside>
+        </div>
+      </section>
+
+      <!-- -------------------------------------------------------- Trends -->
+      <section id="view-trends" class="view" hidden>
+        <div class="panel chart-card">
+          <div class="panel-head">
+            <div>
+              <h2>Spending by category</h2>
+              <p id="trend-period" class="muted subhead"></p>
+            </div>
+            <div class="seg" role="group" aria-label="Chart type">
+              <button type="button" data-chart="donut" aria-pressed="true">Pie</button>
+              <button type="button" data-chart="bars" aria-pressed="false">Bars</button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div id="chart-categories" class="chart" data-label="Spending by category"></div>
             <details class="chart-table"><summary>View as table</summary><div id="table-categories"></div></details>
-          </section>
-          <section class="chart-card">
-            <header class="chart-head"><h3>Top merchants</h3><span class="muted hint">Click to search</span></header>
+          </div>
+        </div>
+
+        <div class="panel chart-card">
+          <div class="panel-head">
+            <h2>Cash flow by month</h2>
+            <ul class="legend">
+              <li><span class="swatch" style="background:var(--series-1)"></span>Income</li>
+              <li><span class="swatch" style="background:var(--series-2)"></span>Spending</li>
+            </ul>
+          </div>
+          <div class="panel-body">
+            <div id="chart-months" class="chart" data-label="Income and spending by month"></div>
+            <details class="chart-table"><summary>View as table</summary><div id="table-months"></div></details>
+          </div>
+        </div>
+
+        <div class="panel chart-card">
+          <div class="panel-head"><h2>Top merchants</h2><span class="muted hint">Click to search</span></div>
+          <div class="panel-body">
             <div id="chart-merchants" class="chart"></div>
             <details class="chart-table"><summary>View as table</summary><div id="table-merchants"></div></details>
-          </section>
+          </div>
         </div>
-      </div>
-
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr><th>Date</th><th>Description</th><th>Category</th><th>Account</th><th class="num">Amount</th></tr>
-          </thead>
-          <tbody id="tx-body"></tbody>
-        </table>
-      </div>
-      <div class="pager">
-        <button id="prev-btn" class="secondary">← Newer</button>
-        <span id="page-info" class="muted"></span>
-        <button id="next-btn" class="secondary">Older →</button>
-      </div>
-    </section>
+      </section>
+    </div>
   </main>
   <script src="/charts.js"></script>
   <script src="/app.js"></script>

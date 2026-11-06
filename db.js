@@ -70,6 +70,11 @@ const SCHEMA = [
     pending BOOLEAN NOT NULL DEFAULT false,
     payment_channel TEXT, logo_url TEXT
   )`,
+  `CREATE TABLE IF NOT EXISTS budgets (
+    category TEXT PRIMARY KEY,
+    amount NUMERIC NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
   `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
   `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
 ];
@@ -183,6 +188,23 @@ class PgStore {
     }));
   }
 
+  async listBudgets() {
+    const { rows } = await this.pool.query('SELECT category, amount FROM budgets ORDER BY category');
+    return rows.map((r) => ({ category: r.category, amount: Number(r.amount) }));
+  }
+
+  async setBudget(category, amount) {
+    await this.pool.query(
+      `INSERT INTO budgets (category, amount) VALUES ($1, $2)
+       ON CONFLICT (category) DO UPDATE SET amount = EXCLUDED.amount, updated_at = now()`,
+      [category, amount],
+    );
+  }
+
+  async deleteBudget(category) {
+    await this.pool.query('DELETE FROM budgets WHERE category = $1', [category]);
+  }
+
   async listCategories() {
     const { rows } = await this.pool.query(
       'SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL ORDER BY 1',
@@ -236,7 +258,7 @@ class FileStore {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
     this.data = fs.existsSync(this.file)
       ? JSON.parse(fs.readFileSync(this.file, 'utf8'))
-      : { items: {}, accounts: {}, transactions: {} };
+      : { items: {}, accounts: {}, transactions: {}, budgets: {} };
   }
 
   save() {
@@ -284,6 +306,22 @@ class FileStore {
     return Object.values(this.data.accounts)
       .map((a) => ({ ...a, institution_name: this.data.items[a.item_id]?.institution_name }))
       .sort((a, b) => `${a.institution_name}${a.name}`.localeCompare(`${b.institution_name}${b.name}`));
+  }
+
+  async listBudgets() {
+    return Object.entries(this.data.budgets || {})
+      .map(([category, amount]) => ({ category, amount }))
+      .sort((a, b) => a.category.localeCompare(b.category));
+  }
+
+  async setBudget(category, amount) {
+    (this.data.budgets ||= {})[category] = amount;
+    this.save();
+  }
+
+  async deleteBudget(category) {
+    if (this.data.budgets) delete this.data.budgets[category];
+    this.save();
   }
 
   async listCategories() {
