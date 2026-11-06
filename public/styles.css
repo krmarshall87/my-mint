@@ -1,14 +1,20 @@
 :root {
   --bg: #f6f7f9; --panel: #fff; --text: #1b1f24; --muted: #6b7280; --border: #e5e7eb;
   --accent: #0f9d58; --accent-text: #fff; --pos: #0f8a4c; --neg: #b42318; --warn: #b45309;
+  /* Chart tokens (validated: CVD + contrast vs --panel in each mode) */
+  --series-1: #2a78d6; --series-2: #eb6834;
+  --grid: #e1e0d9; --axis: #c3c2b7; --tick: #6b7280; --hover-wash: rgba(11,11,11,0.04);
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #0f1216; --panel: #171b21; --text: #e6e8eb; --muted: #9aa3ae; --border: #2a3039;
     --accent: #22c55e; --accent-text: #06120a; --pos: #4ade80; --neg: #f87171; --warn: #fbbf24;
+    --series-1: #3987e5; --series-2: #d95926;
+    --grid: #262b33; --axis: #3a414c; --tick: #9aa3ae; --hover-wash: rgba(255,255,255,0.05);
   }
 }
 * { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); }
 h1 { font-size: 18px; margin: 0; }
 h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 12px; }
@@ -22,7 +28,7 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1; }
 .actions { display: flex; align-items: center; gap: 8px; }
-.layout { display: grid; grid-template-columns: 300px 1fr; gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; }
+.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; }
 .sidebar, .content { min-width: 0; }
 .sidebar { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; align-self: start; }
 
@@ -39,7 +45,7 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .filters input[type=search] { flex: 1 1 220px; }
 .filters label { display: flex; align-items: center; gap: 6px; color: var(--muted); }
 
-.summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .summary > div { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; display: flex; flex-direction: column; }
 .summary strong { font-size: 18px; font-variant-numeric: tabular-nums; }
 
@@ -56,9 +62,59 @@ td.desc .sub { color: var(--muted); font-size: 12px; }
 .empty { text-align: center; color: var(--muted); padding: 40px; }
 .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px; }
 
+/* ------------------------------------------------------------ Charts -- */
+.insights { transition: opacity .15s; }
+.insights.loading { opacity: .55; }
+.note { font-size: 12px; margin: -6px 0 14px; }
+.chart-card { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; min-width: 0; }
+.chart-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; margin-bottom: 8px; }
+.chart-head h3 { font-size: 14px; margin: 0; }
+.hint { font-size: 12px; }
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.chart-grid .chart-card { margin-bottom: 14px; }
+.chart { min-height: 40px; }
+.chart svg { display: block; overflow: visible; }
+.chart-empty { margin: 24px 0; text-align: center; }
+
+.legend { display: flex; gap: 14px; list-style: none; margin: 0; padding: 0; font-size: 12px; color: var(--muted); }
+.legend li { display: flex; align-items: center; gap: 6px; }
+.swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+.grid-line { stroke: var(--grid); stroke-width: 1; }
+.axis-line { stroke: var(--axis); stroke-width: 1; }
+.tick { fill: var(--tick); font-size: 11px; font-variant-numeric: tabular-nums; }
+.hover-band { fill: var(--hover-wash); }
+.hit { fill: transparent; cursor: default; outline: none; }
+.hit:focus-visible { stroke: var(--text); stroke-width: 1; }
+
+.bar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.bar-row { display: grid; grid-template-columns: minmax(0, 9.5em) minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 4px 6px; margin: 0 -6px; border-radius: 6px; outline: none; }
+.bar-row:hover, .bar-row:focus-visible { background: var(--hover-wash); }
+.bar-row:focus-visible { box-shadow: 0 0 0 1px var(--text) inset; }
+.bar-row.clickable { cursor: pointer; }
+.bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.bar-track { height: 14px; display: block; }
+.bar-fill { display: block; height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; }
+.bar-value { font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; min-width: 4.5em; }
+
+.chart-tip { position: absolute; z-index: 2; pointer-events: none; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; box-shadow: 0 4px 16px rgba(0,0,0,.12); font-size: 12px; min-width: 140px; }
+.tip-title { color: var(--muted); margin-bottom: 4px; }
+.tip-row { display: flex; align-items: center; gap: 8px; }
+.tip-row strong { font-size: 13px; font-variant-numeric: tabular-nums; }
+.tip-key { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+
+.chart-table { margin-top: 8px; font-size: 12px; }
+.chart-table summary { cursor: pointer; color: var(--muted); }
+.data-table { margin-top: 8px; width: 100%; }
+.data-table th, .data-table td { padding: 5px 8px; }
+
+@media (max-width: 1100px) {
+  .chart-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+
 @media (max-width: 860px) {
-  .layout { grid-template-columns: 1fr; padding: 12px; }
-  .summary { grid-template-columns: repeat(2, 1fr); }
+  .layout { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar { padding: 10px 12px; }
   #status { display: none; }
 }
