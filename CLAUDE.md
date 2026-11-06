@@ -31,7 +31,7 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 
 ## Security
 
-- **Every route except `/healthz` requires auth, reads included.** This is private financial data, so nothing is public.
+- **Every route except `/healthz` and the three icon files (`favicon.ico`, `favicon.svg`, `apple-touch-icon.png`) requires auth, reads included.** This is private financial data, so nothing is public.
 - Keep the CSP strict. Plaid Link needs `script-src` and `frame-src https://cdn.plaid.com` and inline styles. Load nothing else from third parties.
 - Escape all server data before putting it into `innerHTML` (use `esc()` in `app.js`).
 
