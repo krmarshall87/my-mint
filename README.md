@@ -36,7 +36,7 @@ With `PLAID_ENV=sandbox`, link any bank in Plaid Link and sign in with `user_goo
    - `APP_PASSWORD`: a strong password. The app refuses to start in production without it.
    - `ENCRYPTION_KEY` is generated automatically. Don't change it later, or saved bank connections can't be decrypted and you'll have to re-link them.
    - `PLAID_REDIRECT_URI`: `https://<your-service>.onrender.com/` (see OAuth below).
-4. To use real accounts, change `PLAID_ENV` to `production` and use your production secret.
+4. `render.yaml` sets `PLAID_ENV=production`, so `PLAID_SECRET` must be your **production** secret. Render re-applies `value:` entries on every Blueprint sync, so change the environment in `render.yaml`, not in the dashboard. Use a local `.env` with `PLAID_ENV=sandbox` for testing.
 
 ### OAuth banks (Chase, Bank of America, Wells Fargo, Capital One, …)
 

@@ -10,8 +10,11 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Values set with `value:` are re-applied whenever the Blueprint syncs, so
+      # this is the source of truth for the environment, not the dashboard.
+      # The secret (PLAID_SECRET) must be the matching production secret.
       - key: PLAID_ENV
-        value: sandbox
+        value: production
       - key: PLAID_CLIENT_ID
         sync: false
       - key: PLAID_SECRET
