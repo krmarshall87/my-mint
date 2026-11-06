@@ -294,6 +294,7 @@ app.get('/api/transactions', async (req, res) => {
   );
 });
 
+// ------------------------------------------------------------- insights --
 // Money moving between your own accounts isn't income or spending: counting it
 // would double-count (a card payment, then the card purchases it pays for).
 const isInternalMove = (t) =>
@@ -302,60 +303,214 @@ const isInternalMove = (t) =>
   t.category_detailed === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT';
 
 const round2 = (n) => Math.round(n * 100) / 100;
-const MAX_CATEGORIES = 8;
-const MAX_MERCHANTS = 8;
+const merchantOf = (t) => t.merchant_name || t.name || 'Unknown';
+const isoDate = (d) => d.toISOString().slice(0, 10);
+const daysAgo = (n) => isoDate(new Date(Date.now() - n * 86400000));
+
+// Income is money in that Plaid categorizes as INCOME. Any other money in is a
+// refund and reduces spending in its own category.
+function aggregate(transactions, { includeInternal = false } = {}) {
+  const out = { income: 0, spending: 0, categories: new Map(), months: new Map(), merchants: new Map(), counted: 0 };
+  for (const t of transactions) {
+    if (!includeInternal && isInternalMove(t)) continue;
+    out.counted += 1;
+    const month = t.date.slice(0, 7);
+    const m = out.months.get(month) || { month, income: 0, spending: 0 };
+    if (t.category === 'INCOME') {
+      out.income -= t.amount;
+      m.income -= t.amount;
+    } else {
+      out.spending += t.amount;
+      m.spending += t.amount;
+      const cat = t.category || 'UNCATEGORIZED';
+      out.categories.set(cat, (out.categories.get(cat) || 0) + t.amount);
+      if (t.amount > 0) {
+        const name = merchantOf(t);
+        const mer = out.merchants.get(name) || { name, amount: 0, count: 0 };
+        mer.amount += t.amount;
+        mer.count += 1;
+        out.merchants.set(name, mer);
+      }
+    }
+    out.months.set(month, m);
+  }
+  return out;
+}
+
+const allTransactions = async (filters = {}) =>
+  (await store.listTransactions({ accountId: null, start: null, end: null, category: null, q: null, ...filters, limit: 1e6, offset: 0 }))
+    .transactions;
+
+// Chart colors follow the category, not its rank in the current view: the seven
+// biggest spending categories of all time own slots 1-7 and everything else is
+// "Other", so changing a filter never repaints a category.
+const COLOR_SLOTS = 7;
+function categorySlots(allTime) {
+  const ranked = [...aggregate(allTime).categories].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  return new Map(ranked.slice(0, COLOR_SLOTS).map(([cat], i) => [cat, i + 1]));
+}
 
 // Aggregates for the charts, scoped by the same filters as the transaction list.
 // Done in JS so it's identical for every store; a single user's history is small.
 app.get('/api/insights', async (req, res) => {
   const filters = parseFilters(req.query);
-  const { transactions } = await store.listTransactions({ ...filters, limit: 1e6, offset: 0 });
-  // If the user explicitly filtered to a transfer category, show it rather than hiding everything.
-  const counted = filters.category ? transactions : transactions.filter((t) => !isInternalMove(t));
+  const [txns, allTime] = await Promise.all([allTransactions(filters), allTransactions()]);
+  // An explicit category filter (e.g. Transfer out) shows what was asked for instead of hiding it.
+  const agg = aggregate(txns, { includeInternal: !!filters.category });
+  const slots = categorySlots(allTime);
 
-  let income = 0, spending = 0;
-  const months = new Map(), categories = new Map(), merchants = new Map();
-  for (const t of counted) {
-    const month = t.date.slice(0, 7);
-    const m = months.get(month) || { month, income: 0, spending: 0 };
-    if (t.amount < 0) {
-      income -= t.amount;
-      m.income -= t.amount;
-    } else {
-      spending += t.amount;
-      m.spending += t.amount;
-      const cat = t.category || 'UNCATEGORIZED';
-      categories.set(cat, (categories.get(cat) || 0) + t.amount);
-      const name = t.merchant_name || t.name || 'Unknown';
-      const mer = merchants.get(name) || { name, amount: 0, count: 0 };
-      mer.amount += t.amount;
-      mer.count += 1;
-      merchants.set(name, mer);
-    }
-    months.set(month, m);
+  const categories = [];
+  let other = 0, otherCount = 0;
+  for (const [category, amount] of agg.categories) {
+    if (amount <= 0) continue;
+    if (slots.has(category)) categories.push({ category, amount: round2(amount), slot: slots.get(category) });
+    else { other += amount; otherCount += 1; }
   }
-
-  const catList = [...categories].map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount);
-  if (catList.length > MAX_CATEGORIES) {
-    const rest = catList.splice(MAX_CATEGORIES - 1);
-    catList.push({ category: 'OTHER', amount: rest.reduce((s, c) => s + c.amount, 0), categories: rest.length });
-  }
+  categories.sort((a, b) => b.amount - a.amount);
+  if (other > 0) categories.push({ category: 'OTHER', amount: round2(other), slot: 0, categories: otherCount });
 
   res.json({
-    income: round2(income),
-    spending: round2(spending),
-    net: round2(income - spending),
-    count: counted.length,
-    excluded: transactions.length - counted.length,
-    months: [...months.values()]
+    income: round2(agg.income),
+    spending: round2(agg.spending),
+    net: round2(agg.income - agg.spending),
+    count: agg.counted,
+    excluded: txns.length - agg.counted,
+    months: [...agg.months.values()]
       .sort((a, b) => a.month.localeCompare(b.month))
       .map((m) => ({ ...m, income: round2(m.income), spending: round2(m.spending) })),
-    categories: catList.map((c) => ({ ...c, amount: round2(c.amount) })),
-    merchants: [...merchants.values()]
+    categories,
+    merchants: [...agg.merchants.values()]
       .sort((a, b) => b.amount - a.amount)
-      .slice(0, MAX_MERCHANTS)
+      .slice(0, 8)
       .map((m) => ({ ...m, amount: round2(m.amount) })),
   });
+});
+
+// --------------------------------------------------------------- budgets --
+// A budget is a monthly limit per Plaid category; INCOME is the expected income.
+const isCategory = (c) => typeof c === 'string' && /^[A-Z_]{2,64}$/.test(c);
+
+app.get('/api/budgets', async (_req, res) => res.json(await store.listBudgets()));
+
+app.put('/api/budgets/:category', async (req, res) => {
+  const { category } = req.params;
+  const amount = Number(req.body?.amount);
+  if (!isCategory(category)) return res.status(400).json({ error_message: 'Invalid category' });
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9) return res.status(400).json({ error_message: 'Amount must be a positive number' });
+  await store.setBudget(category, round2(amount));
+  res.json({ category, amount: round2(amount) });
+});
+
+app.delete('/api/budgets/:category', async (req, res) => {
+  if (!isCategory(req.params.category)) return res.status(400).json({ error_message: 'Invalid category' });
+  await store.deleteBudget(req.params.category);
+  res.json({ ok: true });
+});
+
+function monthBounds(month) {
+  const [y, m] = month.split('-').map(Number);
+  const start = `${month}-01`;
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const end = `${month}-${String(days).padStart(2, '0')}`;
+  const today = isoDate(new Date());
+  // How far through the month we are: 0..1, for the "today" marker on budget bars.
+  const progress = today < start ? 0 : today > end ? 1 : Number(today.slice(8, 10)) / days;
+  return { start, end, progress };
+}
+
+async function budgetSummary(month) {
+  const { start, end, progress } = monthBounds(month);
+  const [txns, budgets] = await Promise.all([allTransactions({ start, end }), store.listBudgets()]);
+  const agg = aggregate(txns);
+  const budgetOf = new Map(budgets.map((b) => [b.category, b.amount]));
+  const spending = budgets
+    .filter((b) => b.category !== 'INCOME')
+    .map((b) => ({ category: b.category, budget: b.amount, spent: round2(Math.max(0, agg.categories.get(b.category) || 0)) }))
+    .sort((a, b) => b.spent / b.budget - a.spent / a.budget);
+  const unbudgeted = [...agg.categories].filter(([c]) => !budgetOf.has(c)).reduce((s, [, v]) => s + v, 0);
+  const budgetedSpending = spending.reduce((s, b) => s + b.budget, 0);
+  return {
+    month,
+    progress,
+    income: { actual: round2(agg.income), budget: budgetOf.get('INCOME') ?? null },
+    spending,
+    unbudgeted: round2(Math.max(0, unbudgeted)),
+    totals: {
+      income: round2(agg.income),
+      spending: round2(agg.spending),
+      budgetedIncome: budgetOf.get('INCOME') ?? null,
+      budgetedSpending: round2(budgetedSpending),
+      leftOver: round2(agg.income - agg.spending),
+    },
+  };
+}
+
+const isMonth = (s) => typeof s === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
+app.get('/api/budget-summary', async (req, res) => {
+  const month = isMonth(req.query.month) ? req.query.month : isoDate(new Date()).slice(0, 7);
+  res.json(await budgetSummary(month));
+});
+
+// ---------------------------------------------------------------- alerts --
+// Computed from the data on each request, so there's nothing to keep in sync.
+const pretty = (c) => (c ? c.toLowerCase().replace(/_/g, ' ').replace(/^\w/, (x) => x.toUpperCase()) : 'Uncategorized');
+const usd = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
+const LARGE_PURCHASE = () => Number(process.env.ALERT_LARGE_AMOUNT || 500);
+const MAX_ALERTS = 12;
+
+app.get('/api/alerts', async (_req, res) => {
+  const today = isoDate(new Date());
+  const alerts = [];
+  const add = (id, level, date, ...parts) => alerts.push({ id, level, date, parts: parts.map((p) => (typeof p === 'string' ? { t: p } : p)) });
+  const b = (t) => ({ t, strong: true });
+
+  // Broken bank connections.
+  for (const item of await store.listItems()) {
+    if (item.error) add(`item:${item.item_id}:${item.error}`, 'critical', today, b(item.institution_name), ` needs attention (${item.error}). Reconnect it from the accounts list.`);
+  }
+
+  // Budgets this month.
+  const month = today.slice(0, 7);
+  const summary = await budgetSummary(month);
+  for (const s of summary.spending) {
+    if (s.spent > s.budget) {
+      add(`budget-over:${month}:${s.category}`, 'critical', today, 'This month, you spent ', b(usd(s.spent)), ' on ', b(pretty(s.category)), '. This exceeds your budget of ', b(usd(s.budget)), ` by ${usd(s.spent - s.budget)}.`);
+    } else if (s.spent >= s.budget * 0.9) {
+      add(`budget-near:${month}:${s.category}`, 'warning', today, `You've used ${Math.round((s.spent / s.budget) * 100)}% of your `, b(pretty(s.category)), ' budget (', b(usd(s.spent)), ` of ${usd(s.budget)}).`);
+    }
+  }
+
+  // Unusual spending: last 30 days vs the 30-day average of the 90 days before
+  // that. Only once the history reaches back that far, or "usual" is understated.
+  const priorTxns = await allTransactions({ start: daysAgo(119), end: daysAgo(30) });
+  const historyCoversPrior = priorTxns.length && priorTxns[priorTxns.length - 1].date <= daysAgo(112);
+  const recent = aggregate(historyCoversPrior ? await allTransactions({ start: daysAgo(29), end: today }) : []);
+  const prior = aggregate(priorTxns);
+  for (const [cat, spent] of recent.categories) {
+    const usual = (prior.categories.get(cat) || 0) / 3;
+    if (usual >= 20 && spent >= usual * 1.5 && spent - usual >= 50) {
+      add(`unusual:${today}:${cat}`, 'warning', today, 'In the past 30 days, you spent ', b(usd(spent)), ' on ', b(pretty(cat)), `. Usually you spend ${usd(usual)}.`);
+    }
+  }
+
+  // Large purchases and income in the last week.
+  const accounts = new Map((await store.listAccounts()).map((a) => [a.account_id, a]));
+  const acctName = (id) => {
+    const a = accounts.get(id);
+    return a ? `${a.institution_name ? a.institution_name + ' ' : ''}${a.name}${a.mask ? ` ••${a.mask}` : ''}` : 'your account';
+  };
+  for (const t of await allTransactions({ start: daysAgo(6), end: today })) {
+    if (isInternalMove(t)) continue;
+    if (t.category === 'INCOME' && t.amount < 0) {
+      add(`income:${t.transaction_id}`, 'good', t.date, 'You received ', b(usd(-t.amount)), ' from ', b(merchantOf(t)), ' in ', b(acctName(t.account_id)), '.');
+    } else if (t.amount >= LARGE_PURCHASE()) {
+      add(`large:${t.transaction_id}`, 'info', t.date, 'Your ', b(usd(t.amount)), ' purchase from ', b(merchantOf(t)), t.pending ? ' is pending on ' : ' has cleared on ', b(acctName(t.account_id)), '.');
+    }
+  }
+
+  const rank = { critical: 0, warning: 1, info: 2, good: 3 };
+  alerts.sort((x, y) => rank[x.level] - rank[y.level] || y.date.localeCompare(x.date));
+  res.json(alerts.slice(0, MAX_ALERTS));
 });
 
 app.use((err, _req, res, _next) => {

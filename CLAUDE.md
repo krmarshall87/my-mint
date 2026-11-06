@@ -9,6 +9,10 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 - Test anything that touches Plaid against the **sandbox** (`PLAID_ENV=sandbox`). To link the test bank without the UI, call `sandboxPublicTokenCreate` (`ins_109508`, First Platypus Bank, `initial_products: ['transactions']`), then POST to `/api/exchange`. Test the Link pop-up itself with Playwright using `user_good` / `pass_good`.
 - Never commit secrets: no Plaid keys, `.env`, `data/`, or access tokens. Pass keys as environment variables only.
 
+## Data
+
+- `budgets` table: one row per category (`INCOME` = expected monthly income). Both stores implement `listBudgets`, `setBudget` and `deleteBudget`.
+
 ## Plaid conventions
 
 - In Plaid amounts, **positive means money leaving the account**. The UI shows positive amounts as outflow (−) and negative ones as inflow (+). Keep that convention everywhere, including CSV export.
@@ -36,4 +40,8 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 - Use the `api()` helper in `public/app.js` for every request. It throws on 4xx/5xx with the server's `error_message`; don't call `fetch` directly.
 - On mobile, use `minmax(0, 1fr)` (or `min-width: 0` on grid children) instead of a bare `1fr` next to `white-space: nowrap` content. Keep tables inside a horizontally scrolling wrapper (`.table-wrap`), and set `-webkit-text-size-adjust: 100%`.
 - Support both light and dark mode through the CSS variables in `:root`.
-- Charts live in `public/charts.js`: plain SVG and HTML built with DOM calls and `textContent`, with no chart library (the CSP blocks third-party scripts). Series colors are `--series-1` (income, blue) and `--series-2` (spending, orange), validated for color-blind safety and contrast against `--panel` in both modes; re-validate before adding or changing a series color. Every chart has a hover/focus tooltip and a "View as table" twin. Income and spending exclude transfers between your own accounts and credit-card payments (`isInternalMove` in `server.js`).
+- Charts live in `public/charts.js`: plain SVG and HTML built with DOM calls and `textContent`, with no chart library (the CSP blocks third-party scripts). Series colors are `--series-1` (income, blue) and `--series-2` (spending, orange), validated for color-blind safety and contrast against `--panel` in both modes; re-validate before adding or changing a series color. Every chart has a hover/focus tooltip and a "View as table" twin. Income and spending exclude transfers between your own accounts and credit-card payments (`isInternalMove` in `server.js`). Income is only Plaid's `INCOME` category; any other money in is a refund and reduces spending in its own category (`aggregate()` in `server.js`).
+- Category colors follow the category, never its rank in the current view: the top 7 spending categories of all time own `--cat-1`…`--cat-7` and the rest fold into `--cat-other` (`categorySlots()` in `server.js`). That 8-color set is validated for color-blind safety in both modes. Three light-mode slots are below 3:1 contrast, so the donut must keep its legend with names and values, and its table view.
+- Budget and alert status colors (`--good`, `--warning`, `--critical`) are reserved for status and always ship with a label ("$9 over") or an icon, never color alone.
+- The look is Mint-inspired but our own: no Intuit or Mint logos, artwork or copied assets.
+- Alerts are computed on each request from the data (`/api/alerts`), so there's no alert state to sync. Dismissals are per-browser (`localStorage`).
