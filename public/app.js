@@ -126,12 +126,6 @@ async function loadTransactions() {
   const acctById = Object.fromEntries(state.accounts.map((a) => [a.account_id, a]));
 
   $('#sum-count').textContent = data.total.toLocaleString();
-  $('#sum-in').textContent = money(data.inflow);
-  $('#sum-out').textContent = money(data.outflow);
-  const net = data.inflow - data.outflow;
-  const netEl = $('#sum-net');
-  netEl.textContent = money(net);
-  netEl.className = net >= 0 ? 'pos' : 'neg';
 
   $('#tx-body').innerHTML = data.transactions.length
     ? data.transactions
@@ -161,11 +155,123 @@ async function loadTransactions() {
   $('#next-btn').disabled = to >= data.total;
 }
 
+// ------------------------------------------------------------- Insights --
+const SERIES = { income: 'var(--series-1)', spending: 'var(--series-2)' };
+const wholeMoney = (n) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
+const MONTH_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', timeZone: 'UTC' });
+const MONTH_LONG = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
+let lastInsights = null;
+
+function renderInsights(d) {
+  $('#sum-in').textContent = money(d.income);
+  $('#sum-out').textContent = money(d.spending);
+  const netEl = $('#sum-net');
+  netEl.textContent = (d.net > 0 ? '+' : '') + money(d.net);
+  netEl.className = d.net >= 0 ? 'pos' : 'neg';
+  const note = $('#excluded-note');
+  note.hidden = !d.excluded;
+  note.textContent = `Income and spending leave out ${d.excluded.toLocaleString()} transfers between your accounts and credit-card payments, so nothing is counted twice.`;
+
+  const months = d.months.map((m) => {
+    const date = new Date(`${m.month}-01T00:00:00Z`);
+    const net = m.income - m.spending;
+    return { ...m, label: MONTH_FMT.format(date), year: `’${m.month.slice(2, 4)}`, sub: MONTH_LONG.format(date), extra: { value: (net > 0 ? '+' : '') + money(net), label: 'Net' } };
+  });
+  Charts.columns($('#chart-months'), {
+    rows: months,
+    series: [
+      { key: 'income', label: 'Income', color: SERIES.income },
+      { key: 'spending', label: 'Spending', color: SERIES.spending },
+    ],
+    format: money,
+  });
+  Charts.table($('#table-months'), {
+    rows: months,
+    columns: [
+      { label: 'Month', get: (r) => r.sub },
+      { label: 'Income', num: true, get: (r) => money(r.income) },
+      { label: 'Spending', num: true, get: (r) => money(r.spending) },
+      { label: 'Net', num: true, get: (r) => money(r.income - r.spending) },
+    ],
+  });
+
+  const catLabel = (c) => (c.category === 'OTHER' ? `Other (${c.categories} categories)` : prettyCat(c.category));
+  Charts.bars($('#chart-categories'), {
+    color: SERIES.spending,
+    total: d.spending,
+    format: wholeMoney,
+    rows: d.categories.map((c) => ({
+      label: catLabel(c),
+      value: c.amount,
+      onClick: c.category === 'OTHER' ? null : () => setFilter('category', filtersForm.category.value === c.category ? '' : c.category),
+    })),
+  });
+  Charts.table($('#table-categories'), {
+    rows: d.categories,
+    columns: [
+      { label: 'Category', get: catLabel },
+      { label: 'Spending', num: true, get: (c) => money(c.amount) },
+      { label: 'Share', num: true, get: (c) => `${d.spending ? Math.round((c.amount / d.spending) * 100) : 0}%` },
+    ],
+  });
+
+  Charts.bars($('#chart-merchants'), {
+    color: SERIES.spending,
+    total: d.spending,
+    format: wholeMoney,
+    rows: d.merchants.map((m) => ({
+      label: m.name,
+      value: m.amount,
+      sub: `${m.count} transaction${m.count === 1 ? '' : 's'}`,
+      onClick: () => setFilter('q', filtersForm.q.value === m.name ? '' : m.name),
+    })),
+  });
+  Charts.table($('#table-merchants'), {
+    rows: d.merchants,
+    columns: [
+      { label: 'Merchant', get: (m) => m.name },
+      { label: 'Spending', num: true, get: (m) => money(m.amount) },
+      { label: 'Transactions', num: true, get: (m) => m.count.toLocaleString() },
+    ],
+  });
+}
+
+async function loadInsights() {
+  const box = $('#insights');
+  box.classList.add('loading'); // keep the previous render, dimmed, while refetching
+  try {
+    lastInsights = await api(`/api/insights?${currentQuery()}`);
+    renderInsights(lastInsights);
+  } finally {
+    box.classList.remove('loading');
+  }
+}
+
+// Charts size to their container; redraw when it changes width.
+let lastWidth = 0;
+new ResizeObserver(([entry]) => {
+  const w = Math.round(entry.contentRect.width);
+  if (lastInsights && w !== lastWidth) renderInsights(lastInsights);
+  lastWidth = w;
+}).observe($('#chart-months'));
+
+function setFilter(name, value) {
+  filtersForm[name].value = value;
+  reload();
+}
+
+// Re-query everything the filters scope: the table and the charts.
+function reload() {
+  state.offset = 0;
+  renderAccounts();
+  return Promise.all([loadTransactions(), loadInsights()]);
+}
+
 async function refreshAll() {
   [state.items, state.accounts] = await Promise.all([api('/api/items'), api('/api/accounts')]);
   renderAccounts();
   await loadCategories();
-  await loadTransactions();
+  await Promise.all([loadTransactions(), loadInsights()]);
 }
 
 async function sync() {
@@ -210,11 +316,7 @@ async function exportCsv() {
 let debounce;
 filtersForm.addEventListener('input', () => {
   clearTimeout(debounce);
-  debounce = setTimeout(() => {
-    state.offset = 0;
-    renderAccounts();
-    loadTransactions();
-  }, 250);
+  debounce = setTimeout(reload, 250);
 });
 filtersForm.addEventListener('submit', (e) => e.preventDefault());
 $('#link-btn').addEventListener('click', () => startLink());
@@ -237,9 +339,7 @@ $('#accounts').addEventListener('click', async (e) => {
   } else if (acct) {
     const sel = filtersForm.account_id;
     sel.value = sel.value === acct.dataset.account ? '' : acct.dataset.account;
-    state.offset = 0;
-    renderAccounts();
-    loadTransactions();
+    reload();
   }
 });
 

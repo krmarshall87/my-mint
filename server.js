@@ -273,18 +273,89 @@ app.get('/api/categories', async (_req, res) => {
 });
 
 const isDate = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
-app.get('/api/transactions', async (req, res) => {
-  const q = req.query;
-  const filters = {
+function parseFilters(q) {
+  return {
     accountId: q.account_id || null,
     start: isDate(q.start) ? q.start : null,
     end: isDate(q.end) ? q.end : null,
     category: q.category || null,
     q: typeof q.q === 'string' && q.q.trim() ? q.q.trim() : null,
-    limit: Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 5000),
-    offset: Math.max(parseInt(q.offset, 10) || 0, 0),
   };
-  res.json(await store.listTransactions(filters));
+}
+
+app.get('/api/transactions', async (req, res) => {
+  const q = req.query;
+  res.json(
+    await store.listTransactions({
+      ...parseFilters(q),
+      limit: Math.min(Math.max(parseInt(q.limit, 10) || 100, 1), 5000),
+      offset: Math.max(parseInt(q.offset, 10) || 0, 0),
+    }),
+  );
+});
+
+// Money moving between your own accounts isn't income or spending: counting it
+// would double-count (a card payment, then the card purchases it pays for).
+const isInternalMove = (t) =>
+  t.category === 'TRANSFER_IN' ||
+  t.category === 'TRANSFER_OUT' ||
+  t.category_detailed === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT';
+
+const round2 = (n) => Math.round(n * 100) / 100;
+const MAX_CATEGORIES = 8;
+const MAX_MERCHANTS = 8;
+
+// Aggregates for the charts, scoped by the same filters as the transaction list.
+// Done in JS so it's identical for every store; a single user's history is small.
+app.get('/api/insights', async (req, res) => {
+  const filters = parseFilters(req.query);
+  const { transactions } = await store.listTransactions({ ...filters, limit: 1e6, offset: 0 });
+  // If the user explicitly filtered to a transfer category, show it rather than hiding everything.
+  const counted = filters.category ? transactions : transactions.filter((t) => !isInternalMove(t));
+
+  let income = 0, spending = 0;
+  const months = new Map(), categories = new Map(), merchants = new Map();
+  for (const t of counted) {
+    const month = t.date.slice(0, 7);
+    const m = months.get(month) || { month, income: 0, spending: 0 };
+    if (t.amount < 0) {
+      income -= t.amount;
+      m.income -= t.amount;
+    } else {
+      spending += t.amount;
+      m.spending += t.amount;
+      const cat = t.category || 'UNCATEGORIZED';
+      categories.set(cat, (categories.get(cat) || 0) + t.amount);
+      const name = t.merchant_name || t.name || 'Unknown';
+      const mer = merchants.get(name) || { name, amount: 0, count: 0 };
+      mer.amount += t.amount;
+      mer.count += 1;
+      merchants.set(name, mer);
+    }
+    months.set(month, m);
+  }
+
+  const catList = [...categories].map(([category, amount]) => ({ category, amount })).sort((a, b) => b.amount - a.amount);
+  if (catList.length > MAX_CATEGORIES) {
+    const rest = catList.splice(MAX_CATEGORIES - 1);
+    catList.push({ category: 'OTHER', amount: rest.reduce((s, c) => s + c.amount, 0), categories: rest.length });
+  }
+
+  res.json({
+    income: round2(income),
+    spending: round2(spending),
+    net: round2(income - spending),
+    count: counted.length,
+    excluded: transactions.length - counted.length,
+    months: [...months.values()]
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .map((m) => ({ ...m, income: round2(m.income), spending: round2(m.spending) })),
+    categories: catList.map((c) => ({ ...c, amount: round2(c.amount) })),
+    merchants: [...merchants.values()]
+      .sort((a, b) => b.amount - a.amount)
+      .slice(0, MAX_MERCHANTS)
+      .map((m) => ({ ...m, amount: round2(m.amount) })),
+  });
 });
 
 app.use((err, _req, res, _next) => {

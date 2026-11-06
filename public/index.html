@@ -34,11 +34,39 @@
         <button type="button" id="export-btn" class="secondary">Export CSV</button>
       </form>
 
-      <div class="summary">
-        <div><span class="muted">Transactions</span><strong id="sum-count">0</strong></div>
-        <div><span class="muted">Money in</span><strong id="sum-in" class="pos">$0.00</strong></div>
-        <div><span class="muted">Money out</span><strong id="sum-out" class="neg">$0.00</strong></div>
-        <div><span class="muted">Net</span><strong id="sum-net">$0.00</strong></div>
+      <div id="insights" class="insights">
+        <div class="summary">
+          <div><span class="muted">Income</span><strong id="sum-in">$0</strong></div>
+          <div><span class="muted">Spending</span><strong id="sum-out">$0</strong></div>
+          <div><span class="muted">Net</span><strong id="sum-net">$0</strong></div>
+          <div><span class="muted">Transactions</span><strong id="sum-count">0</strong></div>
+        </div>
+        <p id="excluded-note" class="note muted" hidden></p>
+
+        <section class="chart-card">
+          <header class="chart-head">
+            <h3>Cash flow by month</h3>
+            <ul class="legend">
+              <li><span class="swatch" style="background:var(--series-1)"></span>Income</li>
+              <li><span class="swatch" style="background:var(--series-2)"></span>Spending</li>
+            </ul>
+          </header>
+          <div id="chart-months" class="chart" data-label="Income and spending by month"></div>
+          <details class="chart-table"><summary>View as table</summary><div id="table-months"></div></details>
+        </section>
+
+        <div class="chart-grid">
+          <section class="chart-card">
+            <header class="chart-head"><h3>Spending by category</h3><span class="muted hint">Click to filter</span></header>
+            <div id="chart-categories" class="chart"></div>
+            <details class="chart-table"><summary>View as table</summary><div id="table-categories"></div></details>
+          </section>
+          <section class="chart-card">
+            <header class="chart-head"><h3>Top merchants</h3><span class="muted hint">Click to search</span></header>
+            <div id="chart-merchants" class="chart"></div>
+            <details class="chart-table"><summary>View as table</summary><div id="table-merchants"></div></details>
+          </section>
+        </div>
       </div>
 
       <div class="table-wrap">
@@ -56,6 +84,7 @@
       </div>
     </section>
   </main>
+  <script src="/charts.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

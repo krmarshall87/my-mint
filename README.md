@@ -1,6 +1,6 @@
 # My Mint
 
-A small personal app that links your bank accounts through [Plaid](https://plaid.com) and shows all of their transactions in one place. You can search, filter by account, category and date, and export to CSV.
+A small personal app that links your bank accounts through [Plaid](https://plaid.com) and shows all of their transactions in one place. You can search, filter by account, category and date, and export to CSV. Charts show cash flow by month, spending by category and top merchants; they follow the same filters. Click a category or merchant to filter by it.
 
 - **Backend:** Node + Express, using the official `plaid` SDK. It calls `/link/token/create`, `/item/public_token/exchange` and `/transactions/sync`.
 - **Storage:** CockroachDB (or any Postgres) when `DATABASE_URL` is set. Tables are created automatically on startup. Without it, data goes to a local JSON file (`data/store.json`) for development.
@@ -59,4 +59,5 @@ All routes need Basic Auth.
 | DELETE | `/api/items/:id` | Remove an Item from Plaid and delete its stored data |
 | GET | `/api/accounts` | List accounts with balances |
 | GET | `/api/categories` | List categories that appear in your transactions |
+| GET | `/api/insights` | Totals, income and spending by month, spending by category and top merchants. Same filters as `/api/transactions`; transfers between your own accounts and credit-card payments are excluded. |
 | GET | `/api/transactions` | Filters: `q`, `account_id`, `category`, `start`, `end`, `limit`, `offset` |
