@@ -28,6 +28,7 @@
       <a href="#transactions" data-view="transactions">Transactions</a>
       <a href="#budgets" data-view="budgets">Budgets</a>
       <a href="#trends" data-view="trends">Trends</a>
+      <a href="#rules" data-view="rules">Rules</a>
     </nav>
   </header>
 
@@ -107,7 +108,7 @@
         </div>
         <p id="excluded-note" class="note muted" hidden></p>
         <div class="panel">
-          <div class="panel-head"><h2>Transactions</h2><button type="button" id="export-btn" class="link-btn">Export CSV</button></div>
+          <div class="panel-head"><h2>Transactions</h2><span class="head-links"><a href="#rules" class="link-btn">Manage rules</a><button type="button" id="export-btn" class="link-btn">Export CSV</button></span></div>
           <div class="table-wrap">
             <table class="tx-table">
               <thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Account</th><th class="num">Amount</th></tr></thead>
@@ -120,11 +121,6 @@
             <button id="next-btn" class="btn">Older →</button>
           </div>
         </div>
-        <details id="rules-panel" class="panel rules-panel">
-          <summary class="panel-head"><h2>Category rules</h2><span id="rules-count" class="muted hint"></span></summary>
-          <p class="empty-note">Rules recategorize every transaction whose merchant contains the text, past and future. Click any category in the table to fix it or create a rule.</p>
-          <ul id="rules" class="rules"></ul>
-        </details>
       </section>
 
       <!-- ------------------------------------------------------- Budgets -->
@@ -161,8 +157,8 @@
         <div class="panel chart-card">
           <div class="panel-head">
             <div>
-              <h2>Spending by category</h2>
-              <p id="trend-period" class="muted subhead"></p>
+              <h2>Spending by category<span id="trend-crumb"></span></h2>
+              <p class="muted subhead"><span id="trend-period"></span> <button type="button" id="trend-back" class="link-btn" hidden>← All categories</button></p>
             </div>
             <div class="seg" role="group" aria-label="Chart type">
               <button type="button" data-chart="donut" aria-pressed="true">Pie</button>
@@ -197,6 +193,20 @@
           </div>
         </div>
       </section>
+
+      <!-- --------------------------------------------------------- Rules -->
+      <section id="view-rules" class="view" hidden>
+        <div class="rules-top">
+          <div>
+            <h1>Rules</h1>
+            <p class="muted">Rules rename and categorize transactions automatically, past and future. They run top to bottom, and the first rule that matches a transaction wins. Use ↑ and ↓ to reorder.</p>
+          </div>
+          <button type="button" id="new-rule" class="btn-primary">+ Create rule</button>
+        </div>
+        <div class="panel">
+          <ol id="rule-list" class="rule-list"></ol>
+        </div>
+      </section>
     </div>
   </main>
   <dialog id="cat-dialog" class="dialog" aria-labelledby="cat-title">
@@ -212,9 +222,68 @@
       <p id="cat-source" class="hint muted"></p>
       <div class="dialog-actions">
         <button type="button" id="cat-reset" class="link-btn" hidden>Reset to automatic</button>
+        <button type="button" id="cat-more" class="link-btn">More options…</button>
         <span class="spacer"></span>
         <button type="button" id="cat-cancel" class="btn">Cancel</button>
         <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="rule-dialog" class="dialog dialog-wide" aria-labelledby="rule-title">
+    <form id="rule-form" method="dialog">
+      <h3 id="rule-title">Create rule</h3>
+      <fieldset>
+        <legend>If a transaction…</legend>
+        <div class="rule-line">
+          <span>Description</span>
+          <select name="match_type" aria-label="Match type">
+            <option value="contains">contains</option>
+            <option value="starts">starts with</option>
+            <option value="equals">is exactly</option>
+          </select>
+          <input name="pattern" required minlength="2" placeholder="e.g. amazon" aria-label="Description text" autocomplete="off" />
+        </div>
+        <div class="rule-line">
+          <span>Account</span>
+          <select name="account_id" aria-label="Account"><option value="">Any account</option></select>
+        </div>
+        <div class="rule-line">
+          <span>Amount</span>
+          <select name="amount_mode" aria-label="Amount condition">
+            <option value="any">any amount</option>
+            <option value="exactly">is exactly</option>
+            <option value="between">is between</option>
+          </select>
+          <input name="amount_min" type="number" min="0" step="0.01" placeholder="$" aria-label="Amount" hidden />
+          <span class="amount-and" hidden>and</span>
+          <input name="amount_max" type="number" min="0" step="0.01" placeholder="$" aria-label="Maximum amount" hidden />
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Then…</legend>
+        <div class="rule-line">
+          <span>Rename to</span>
+          <input name="rename_to" maxlength="60" placeholder="Keep the bank’s description" aria-label="New name" autocomplete="off" />
+        </div>
+        <div class="rule-line">
+          <span>Categorize as</span>
+          <select name="category" aria-label="Category"></select>
+        </div>
+        <p class="hint muted">Pick <em>Hide from Budgets &amp; Trends</em> to keep a transaction in your list without counting it as income or spending.</p>
+      </fieldset>
+      <fieldset class="apply">
+        <legend>Apply to</legend>
+        <label><input type="radio" name="apply" value="past" checked /> Past and future transactions</label>
+        <label><input type="radio" name="apply" value="new" /> <span id="apply-new-label">Only new transactions, from today</span></label>
+      </fieldset>
+      <div id="rule-preview" class="rule-preview" aria-live="polite"></div>
+      <p id="rule-error" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="rule-delete" class="link-btn danger" hidden>Delete rule</button>
+        <span class="spacer"></span>
+        <button type="button" id="rule-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn-primary">Save rule</button>
       </div>
     </form>
   </dialog>

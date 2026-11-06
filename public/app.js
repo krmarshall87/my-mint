@@ -1,5 +1,5 @@
 const PAGE_SIZE = 100;
-const state = { offset: 0, total: 0, accounts: [], items: [], categories: [], view: 'overview', budgetMonth: null, trendChart: 'donut' };
+const state = { offset: 0, total: 0, accounts: [], items: [], tree: [], rules: [], view: 'overview', budgetMonth: null, trendChart: 'donut', trendParent: null };
 const $ = (sel) => document.querySelector(sel);
 const filtersForm = $('#filters');
 const { el } = Charts;
@@ -9,7 +9,7 @@ const money = (n, cur = 'USD') =>
 const wholeMoney = (n) => new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
 const signedMoney = (n) => (n > 0 ? '+' : '') + money(n);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const prettyCat = (c) => (c ? c.toLowerCase().replace(/_/g, ' ').replace(/^\w/, (x) => x.toUpperCase()) : '');
+const prettyCat = (c) => (c === 'OTHER' ? 'Other' : c || 'Uncategorized');
 const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const thisMonth = () => iso(new Date()).slice(0, 7);
 const SHORT_DATE = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
@@ -18,13 +18,27 @@ const MONTH_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', timeZone:
 const MONTH_LONG = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const monthDate = (m) => new Date(`${m}-01T00:00:00Z`);
 
-// Plaid's spending categories, so you can budget for one before you've spent in it.
-const SPENDING_CATEGORIES = [
-  'BANK_FEES', 'ENTERTAINMENT', 'FOOD_AND_DRINK', 'GENERAL_MERCHANDISE', 'GENERAL_SERVICES',
-  'GOVERNMENT_AND_NON_PROFIT', 'HOME_IMPROVEMENT', 'LOAN_PAYMENTS', 'MEDICAL', 'PERSONAL_CARE',
-  'RENT_AND_UTILITIES', 'TRANSPORTATION', 'TRAVEL',
-];
-const ALL_CATEGORIES = [...SPENDING_CATEGORIES, 'INCOME', 'TRANSFER_IN', 'TRANSFER_OUT', 'OTHER'];
+// The category tree (parent → subcategories) from /api/category-tree.
+const parentOfCat = (c) => state.tree.find((p) => p.name === c || p.subs.includes(c))?.name || c;
+const isSystemParent = (p) => p.excluded || p.name === 'Uncategorized';
+// Categories you can budget for: spending only (Income has its own row).
+const isBudgetable = (c) => {
+  const p = state.tree.find((x) => x.name === parentOfCat(c));
+  return p && !isSystemParent(p) && !p.income && parentOfCat(c) !== 'Investments';
+};
+// <select> options grouped by parent. A parent is itself selectable.
+function categoryOptions({ filter = () => true, placeholder, parentLabel = (n) => `${n} (general)` } = {}) {
+  let html = placeholder !== undefined ? `<option value="">${esc(placeholder)}</option>` : '';
+  for (const p of state.tree) {
+    const names = [p.name, ...p.subs].filter(filter);
+    if (!names.length) continue;
+    html += `<optgroup label="${esc(p.name)}">${names
+      .map((n) => `<option value="${esc(n)}">${esc(n === p.name && p.subs.length ? parentLabel(n) : n)}</option>`)
+      .join('')}</optgroup>`;
+  }
+  return html;
+}
+const catTitle = (c) => (parentOfCat(c) !== c ? `${parentOfCat(c)} › ${c}` : c);
 const acctLabel = (a) => `${a.display_name}${a.mask ? ` ••${a.mask}` : ''}`;
 // Transactions currently on screen, so the category dialog can find them.
 const txById = new Map();
@@ -170,10 +184,10 @@ function renderAccounts() {
 }
 
 async function loadCategories() {
-  state.categories = await api('/api/categories');
+  if (!state.tree.length) state.tree = await api('/api/category-tree');
   const sel = filtersForm.category;
   const current = sel.value;
-  sel.innerHTML = '<option value="">All categories</option>' + state.categories.map((c) => `<option value="${esc(c)}">${esc(prettyCat(c))}</option>`).join('');
+  sel.innerHTML = categoryOptions({ placeholder: 'All categories', parentLabel: (n) => `All ${n}` });
   sel.value = current;
 }
 
@@ -264,7 +278,7 @@ function renderOverviewBudget(summary) {
   const rows = [{ category: 'Total', spent: totalSpent, budget: totalBudget, total: true }, ...summary.spending];
   for (const r of rows) {
     const tr = el('tr', { class: r.total ? 'total' : '' });
-    tr.appendChild(el('td', { class: 'cat' }, r.total ? 'Total' : prettyCat(r.category)));
+    tr.appendChild(el('td', { class: 'cat', title: r.total ? '' : catTitle(r.category) }, r.total ? 'Total' : r.category));
     const barCell = el('td', { class: 'bar' });
     barCell.appendChild(Charts.meter({ value: r.spent, max: r.budget, status: budgetStatus(r.spent, r.budget), marker: summary.progress }));
     tr.appendChild(barCell);
@@ -309,11 +323,14 @@ function renderCashflow(chartEl, tableEl, months) {
 
 const SOURCE_NOTE = {
   manual: 'You set this category.',
-  rule: (t) => `Set by your rule “${t.rule}”.`,
+  rule: 'Set by one of your rules.',
   inferred: 'Guessed: Plaid had no category, so this is based on the merchant.',
   plaid: 'Category from your bank, via Plaid.',
 };
 const sourceNote = (t) => { const n = SOURCE_NOTE[t.category_source] || SOURCE_NOTE.plaid; return typeof n === 'function' ? n(t) : n; };
+
+// What to call a transaction: your rule's new name, then Plaid's cleaned-up merchant, then the bank's text.
+const txName = (t) => t.display_name || t.merchant_name || t.name;
 
 function txRow(t, acctById) {
   const a = acctById[t.account_id];
@@ -324,10 +341,10 @@ function txRow(t, acctById) {
     <td class="date">${esc(shortDate(t.date))}</td>
     <td class="desc">
       ${t.logo_url ? `<img class="logo" src="${esc(t.logo_url)}" alt="" loading="lazy" />` : ''}
-      ${esc(t.merchant_name || t.name)}${t.pending ? '<span class="badge">pending</span>' : ''}
-      ${t.merchant_name && t.merchant_name !== t.name ? `<div class="sub">${esc(t.name)}</div>` : ''}
+      ${esc(txName(t))}${t.pending ? '<span class="badge">pending</span>' : ''}${t.category === 'Hide from Budgets & Trends' ? '<span class="badge">hidden</span>' : ''}
+      ${txName(t) !== t.name ? `<div class="sub">${esc(t.name)}</div>` : ''}
     </td>
-    <td class="cat"><button type="button" class="cat-btn ${esc(t.category_source)}" data-tx="${esc(t.transaction_id)}" title="${esc(sourceNote(t))} Click to change.">${esc(prettyCat(t.category))}</button></td>
+    <td class="cat"><button type="button" class="cat-btn ${esc(t.category_source)}" data-tx="${esc(t.transaction_id)}" title="${esc(catTitle(t.category))}. ${esc(sourceNote(t))} Click to change.">${esc(prettyCat(t.category))}</button></td>
     <td>${a ? esc(acctLabel(a)) : ''}</td>
     <td class="num ${out ? 'neg' : 'pos'}">${out ? '−' : '+'}${money(Math.abs(t.amount), t.iso_currency_code)}</td>
   </tr>`;
@@ -363,7 +380,7 @@ function renderTiles(d) {
   netEl.className = d.net >= 0 ? 'pos' : 'neg';
   const note = $('#excluded-note');
   note.hidden = !d.excluded;
-  note.textContent = `Income and spending leave out ${d.excluded.toLocaleString()} transfers between your accounts and credit-card payments, so nothing is counted twice. Refunds reduce spending.`;
+  note.textContent = `Income and spending leave out ${d.excluded.toLocaleString()} transfers, credit-card payments, investment trades and hidden transactions, so nothing is counted twice. Refunds reduce spending.`;
 }
 
 async function loadTransactionsPage() {
@@ -383,33 +400,11 @@ async function loadTransactionsPage() {
 
 async function loadTransactions() {
   await withLoading($('#view-transactions'), () =>
-    Promise.all([loadTransactionsPage(), api(`/api/insights?${currentQuery()}`).then(renderTiles), loadRules()]),
+    Promise.all([loadTransactionsPage(), api(`/api/insights?${currentQuery()}`).then(renderTiles)]),
   );
 }
 
 // ------------------------------------------------------ Category editing --
-async function loadRules() {
-  const rules = await api('/api/rules');
-  $('#rules-count').textContent = rules.length ? `${rules.length} rule${rules.length === 1 ? '' : 's'}` : 'none yet';
-  const list = $('#rules');
-  list.replaceChildren();
-  for (const r of rules) {
-    const li = el('li', { class: 'rule-row' });
-    const text = el('span');
-    text.append('Contains ', el('strong', {}, `“${r.pattern}”`), ' → ', el('strong', {}, prettyCat(r.category)));
-    li.appendChild(text);
-    li.appendChild(el('span', { class: 'muted' }, `${r.matches} transaction${r.matches === 1 ? '' : 's'}`));
-    const del = el('button', { class: 'link-btn danger', type: 'button' }, 'Delete');
-    del.addEventListener('click', async () => {
-      if (!confirm(`Delete the rule for “${r.pattern}”? Its transactions go back to automatic categories.`)) return;
-      await api(`/api/rules?pattern=${encodeURIComponent(r.pattern)}`, { method: 'DELETE' });
-      await afterCategoryChange();
-    });
-    li.appendChild(del);
-    list.appendChild(li);
-  }
-}
-
 // A starting point for a rule: the merchant text without card-reference noise.
 const suggestPattern = (t) =>
   (t.merchant_name || t.name || '').toLowerCase().split('*')[0].replace(/\d[\d-]*/g, ' ').replace(/[#]/g, ' ').replace(/\s+/g, ' ').replace(/^[\s-]+|[\s-]+$/g, '').trim();
@@ -418,12 +413,11 @@ let editing = null;
 function openCategoryDialog(t) {
   editing = t;
   const form = $('#cat-form');
-  $('#cat-merchant').textContent = `${t.merchant_name || t.name} · ${shortDate(t.date)} · ${money(Math.abs(t.amount), t.iso_currency_code)}`;
-  const options = [...new Set([...ALL_CATEGORIES, ...state.categories])].sort((a, b) => prettyCat(a).localeCompare(prettyCat(b)));
-  form.category.innerHTML = options.map((c) => `<option value="${esc(c)}">${esc(prettyCat(c))}</option>`).join('');
+  $('#cat-merchant').textContent = `${txName(t)} · ${shortDate(t.date)} · ${money(Math.abs(t.amount), t.iso_currency_code)}`;
+  form.category.innerHTML = categoryOptions();
   form.category.value = t.category;
   form.useRule.checked = t.category_source !== 'manual';
-  form.pattern.value = t.rule || suggestPattern(t);
+  form.pattern.value = suggestPattern(t);
   form.pattern.disabled = !form.useRule.checked;
   $('#cat-source').textContent = sourceNote(t);
   $('#cat-reset').hidden = t.category_source !== 'manual';
@@ -452,6 +446,11 @@ $('#cat-form').addEventListener('submit', (e) => {
 $('#cat-form').useRule.addEventListener('change', (e) => { $('#cat-form').pattern.disabled = !e.target.checked; });
 $('#cat-cancel').addEventListener('click', () => $('#cat-dialog').close());
 $('#cat-reset').addEventListener('click', () => saveCategory({ category: null }));
+$('#cat-more').addEventListener('click', () => {
+  const f = $('#cat-form');
+  $('#cat-dialog').close();
+  openRuleDialog(null, { pattern: f.pattern.value || suggestPattern(editing), category: f.category.value, from: editing });
+});
 document.addEventListener('click', (e) => {
   const btn = e.target.closest('.cat-btn');
   if (btn && txById.has(btn.dataset.tx)) openCategoryDialog(txById.get(btn.dataset.tx));
@@ -475,10 +474,12 @@ function renderMonthChips() {
   if (sel) box.scrollLeft = sel.offsetLeft - box.clientWidth + sel.offsetWidth + 8;
 }
 
-function budgetRow({ title, spent, budget, status, marker, onSave, onRemove, income = false }) {
+function budgetRow({ title, parent, spent, budget, status, marker, onSave, onRemove, income = false }) {
   const row = el('div', { class: 'budget-row' });
   const top = el('div', { class: 'budget-row-top' });
-  top.appendChild(el('strong', {}, title));
+  const name = el('strong', {}, title);
+  if (parent) name.appendChild(el('small', { class: 'parent-label' }, parent));
+  top.appendChild(name);
   if (budget != null) {
     if (income) {
       const diff = spent - budget;
@@ -537,7 +538,7 @@ async function loadBudgets() {
     // Income
     $('#budget-income').replaceChildren(budgetRow({
       title: 'Income', spent: s.income.actual, budget: s.income.budget, status: 'neutral', marker, income: true,
-      onSave: (amt) => saveBudget('INCOME', amt), onRemove: () => removeBudget('INCOME'),
+      onSave: (amt) => saveBudget('Income', amt), onRemove: () => removeBudget('Income'),
     }));
     $('#income-head').textContent = s.income.budget != null ? `${wholeMoney(s.income.actual)} of ${wholeMoney(s.income.budget)}` : wholeMoney(s.income.actual);
 
@@ -546,7 +547,7 @@ async function loadBudgets() {
     sp.replaceChildren();
     for (const b of s.spending) {
       sp.appendChild(budgetRow({
-        title: prettyCat(b.category), spent: b.spent, budget: b.budget, status: budgetStatus(b.spent, b.budget), marker,
+        title: b.category, parent: b.parent !== b.category ? b.parent : null, spent: b.spent, budget: b.budget, status: budgetStatus(b.spent, b.budget), marker,
         onSave: (amt) => saveBudget(b.category, amt), onRemove: () => removeBudget(b.category),
       }));
     }
@@ -557,12 +558,12 @@ async function loadBudgets() {
 
     // Add-budget choices: spending categories without a budget yet.
     const have = new Set(s.spending.map((b) => b.category));
-    const options = [...new Set([...SPENDING_CATEGORIES, ...state.categories.filter((c) => !/^(INCOME|TRANSFER_)/.test(c))])]
-      .filter((c) => !have.has(c))
-      .sort((a, b) => prettyCat(a).localeCompare(prettyCat(b)));
     const form = $('#add-budget');
-    form.hidden = !options.length;
-    form.category.innerHTML = '<option value="">Choose a category…</option>' + options.map((c) => `<option value="${esc(c)}">${esc(prettyCat(c))}</option>`).join('');
+    form.category.innerHTML = categoryOptions({
+      placeholder: 'Choose a category…',
+      parentLabel: (n) => `All ${n}`,
+      filter: (c) => isBudgetable(c) && !have.has(c),
+    });
 
     // Summary box
     const dl = $('#budget-summary');
@@ -597,31 +598,44 @@ function periodLabel() {
 function renderTrends(d) {
   $('#trend-period').textContent = periodLabel();
   const color = (slot) => (slot ? `var(--cat-${slot})` : 'var(--cat-other)');
-  const label = (c) => (c.category === 'OTHER' ? `Other (${c.categories} ${c.categories === 1 ? 'category' : 'categories'})` : prettyCat(c.category));
-  const drill = (c) => (c.category === 'OTHER' ? null : () => {
-    filtersForm.category.value = c.category;
+  const showTransactions = (category) => () => {
+    filtersForm.category.value = category;
     location.hash = '#transactions';
-  });
+  };
+  // Top level: parent categories; click one to see its subcategories.
+  const parent = state.trendParent && d.categories.find((c) => c.category === state.trendParent);
+  if (!parent) state.trendParent = null;
+  $('#trend-back').hidden = !parent;
+  $('#trend-crumb').textContent = parent ? ` · ${parent.category}` : '';
+  const items = parent
+    ? parent.subs.map((s) => ({
+        label: s.category === parent.category ? `${s.category} (general)` : s.category,
+        value: s.amount,
+        color: color(s.slot),
+        onClick: showTransactions(s.category),
+      }))
+    : d.categories.map((c) => ({
+        label: c.category === 'OTHER' ? `Other (${c.categories} ${c.categories === 1 ? 'category' : 'categories'})` : c.category,
+        value: c.amount,
+        color: color(c.slot),
+        onClick: c.category === 'OTHER' ? null
+          : c.subs.length > 1 || (c.subs.length === 1 && c.subs[0].category !== c.category)
+            ? () => { state.trendParent = c.category; renderTrends(d); }
+            : showTransactions(c.category),
+      }));
+  const total = parent ? parent.amount : d.spending;
   const chartEl = $('#chart-categories');
   if (state.trendChart === 'donut') {
-    Charts.donut(chartEl, {
-      slices: d.categories.map((c) => ({ label: label(c), value: c.amount, color: color(c.slot), onClick: drill(c) })),
-      format: wholeMoney,
-      centerLabel: 'spent',
-    });
+    Charts.donut(chartEl, { slices: items, format: wholeMoney, centerLabel: parent ? parent.category : 'spent' });
   } else {
-    Charts.bars(chartEl, {
-      total: d.spending,
-      format: wholeMoney,
-      rows: d.categories.map((c) => ({ label: label(c), value: c.amount, color: color(c.slot), onClick: drill(c) })),
-    });
+    Charts.bars(chartEl, { total, format: wholeMoney, rows: items });
   }
   Charts.table($('#table-categories'), {
-    rows: d.categories,
+    rows: items.map((i) => ({ category: i.label, amount: i.value })),
     columns: [
-      { label: 'Category', get: label },
+      { label: 'Category', get: (c) => c.category },
       { label: 'Spending', num: true, get: (c) => money(c.amount) },
-      { label: 'Share', num: true, get: (c) => `${d.spending > 0 ? Math.round((c.amount / d.spending) * 100) : 0}%` },
+      { label: 'Share', num: true, get: (c) => `${total > 0 ? Math.round((c.amount / total) * 100) : 0}%` },
     ],
   });
 
@@ -653,6 +667,8 @@ async function loadTrends() {
   });
 }
 
+$('#trend-back').addEventListener('click', () => { state.trendParent = null; if (cache.trends) renderTrends(cache.trends); });
+
 document.querySelectorAll('.seg button').forEach((b) =>
   b.addEventListener('click', () => {
     state.trendChart = b.dataset.chart;
@@ -662,8 +678,193 @@ document.querySelectorAll('.seg button').forEach((b) =>
   }),
 );
 
+
+// ------------------------------------------------------------------ Rules --
+const MATCH_LABEL = { contains: 'contains', starts: 'starts with', equals: 'is exactly' };
+const LONG_DATE = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+
+// "If description contains “amazon” in Chase Freedom and amount is $15.49 → rename to …, categorize as …"
+function ruleSentence(r) {
+  const s = el('span', { class: 'rule-sentence' });
+  const b = (t) => el('strong', {}, t);
+  s.append('If description ', MATCH_LABEL[r.match_type] || 'contains', ' ', b(`“${r.pattern}”`));
+  if (r.account_id) {
+    const a = state.accounts.find((x) => x.account_id === r.account_id);
+    s.append(' in ', b(a ? acctLabel(a) : 'a removed account'));
+  }
+  if (r.amount_min != null && r.amount_max != null && r.amount_min === r.amount_max) s.append(' and amount is ', b(money(r.amount_min)));
+  else if (r.amount_min != null && r.amount_max != null) s.append(' and amount is between ', b(money(r.amount_min)), ' and ', b(money(r.amount_max)));
+  else if (r.amount_min != null) s.append(' and amount is at least ', b(money(r.amount_min)));
+  else if (r.amount_max != null) s.append(' and amount is at most ', b(money(r.amount_max)));
+  s.append(' → ');
+  const actions = [];
+  if (r.rename_to) actions.push(['rename to ', b(`“${r.rename_to}”`)]);
+  if (r.category) actions.push(['categorize as ', b(r.category)]);
+  actions.forEach((parts, i) => { if (i) s.append(', '); s.append(...parts); });
+  if (r.start_date) s.append(el('span', { class: 'muted' }, ` (from ${LONG_DATE.format(new Date(`${r.start_date}T00:00:00Z`))})`));
+  return s;
+}
+
+function renderRules() {
+  const list = $('#rule-list');
+  list.replaceChildren();
+  if (!state.rules.length) {
+    const p = el('li', { class: 'empty-note' }, 'No rules yet. Create one, or click a category in Transactions and save it as a rule.');
+    list.appendChild(p);
+    return;
+  }
+  state.rules.forEach((r, i) => {
+    const li = el('li', { class: 'rule-card' });
+    li.appendChild(el('span', { class: 'rule-num', 'aria-hidden': 'true' }, String(i + 1)));
+    const body = el('div', { class: 'rule-body' });
+    body.appendChild(ruleSentence(r));
+    body.appendChild(el('small', { class: 'muted' }, r.matches ? `Applied to ${r.matches.toLocaleString()} transaction${r.matches === 1 ? '' : 's'}` : 'Not applied to any transactions yet'));
+    li.appendChild(body);
+    const actions = el('div', { class: 'rule-actions' });
+    const btn = (label, title, fn, disabled = false) => {
+      const x = el('button', { type: 'button', class: 'btn icon-btn', title, 'aria-label': title }, label);
+      x.disabled = disabled;
+      x.addEventListener('click', fn);
+      actions.appendChild(x);
+    };
+    btn('↑', 'Move up', () => moveRule(i, -1), i === 0);
+    btn('↓', 'Move down', () => moveRule(i, 1), i === state.rules.length - 1);
+    btn('Edit', 'Edit rule', () => openRuleDialog(r));
+    li.appendChild(actions);
+    list.appendChild(li);
+  });
+}
+
+async function loadRulesView() {
+  await withLoading($('#view-rules'), async () => {
+    state.rules = await api('/api/rules');
+    renderRules();
+  });
+}
+
+async function moveRule(i, delta) {
+  const ids = state.rules.map((r) => r.id);
+  [ids[i], ids[i + delta]] = [ids[i + delta], ids[i]];
+  await api('/api/rules/order', { method: 'POST', body: { ids } });
+  await loadRulesView();
+}
+
+let editingRule = null;
+const ruleForm = $('#rule-form');
+
+function syncAmountFields() {
+  const mode = ruleForm.amount_mode.value;
+  ruleForm.amount_min.hidden = mode === 'any';
+  ruleForm.amount_max.hidden = mode !== 'between';
+  ruleForm.querySelector('.amount-and').hidden = mode !== 'between';
+  ruleForm.amount_min.placeholder = mode === 'between' ? 'From $' : '$';
+}
+
+function ruleBody() {
+  const f = ruleForm;
+  const mode = f.amount_mode.value;
+  const min = mode === 'any' ? null : f.amount_min.value || null;
+  return {
+    id: editingRule?.id,
+    match_type: f.match_type.value,
+    pattern: f.pattern.value,
+    account_id: f.account_id.value || null,
+    amount_min: min,
+    amount_max: mode === 'exactly' ? min : mode === 'between' ? f.amount_max.value || null : null,
+    rename_to: f.rename_to.value,
+    category: f.category.value || null,
+    apply_past: f.apply.value === 'past',
+  };
+}
+
+// Live preview: what the rule would match right now.
+let previewTimer;
+function schedulePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async () => {
+    const box = $('#rule-preview');
+    const body = ruleBody();
+    if ((body.pattern || '').trim().length < 2) {
+      box.replaceChildren(el('p', { class: 'muted' }, 'Type at least 2 characters to see matching transactions.'));
+      return;
+    }
+    try {
+      const p = await api('/api/rules/preview', { method: 'POST', body });
+      box.replaceChildren();
+      box.appendChild(el('p', { class: 'preview-count' }, p.count ? `Matches ${p.count.toLocaleString()} transaction${p.count === 1 ? '' : 's'}` : 'No transactions match yet'));
+      if (p.shadowed) box.appendChild(el('p', { class: 'hint muted' }, `${p.shadowed} of them currently follow another rule. New rules go to the top, so this one will take over.`));
+      if (p.sample.length) {
+        const ul = el('ul', { class: 'preview-list' });
+        for (const t of p.sample) {
+          const li = el('li');
+          li.append(el('span', { class: 'muted' }, shortDate(t.date)), el('span', { class: 'pv-name' }, t.name), el('span', { class: 'muted pv-cat' }, t.category), el('span', { class: 'num' }, money(-t.amount)));
+          ul.appendChild(li);
+        }
+        box.appendChild(ul);
+      }
+    } catch (e) {
+      box.replaceChildren(el('p', { class: 'form-error' }, e.message));
+    }
+  }, 250);
+}
+
+function openRuleDialog(rule, prefill = {}) {
+  editingRule = rule;
+  const f = ruleForm;
+  f.reset();
+  $('#rule-title').textContent = rule ? 'Edit rule' : 'Create rule';
+  $('#rule-delete').hidden = !rule;
+  $('#rule-error').hidden = true;
+  f.account_id.innerHTML = '<option value="">Any account</option>' + state.accounts.map((a) => `<option value="${esc(a.account_id)}">${esc(acctLabel(a))}</option>`).join('');
+  f.category.innerHTML = categoryOptions({ placeholder: 'Don’t change the category' });
+  const r = rule || { match_type: 'contains', pattern: prefill.pattern || '', category: prefill.category || '', account_id: '', rename_to: '' };
+  f.match_type.value = r.match_type;
+  f.pattern.value = r.pattern;
+  f.account_id.value = r.account_id || '';
+  f.rename_to.value = r.rename_to || '';
+  f.category.value = r.category || '';
+  const min = r.amount_min ?? null, max = r.amount_max ?? null;
+  f.amount_mode.value = min == null && max == null ? 'any' : min === max ? 'exactly' : 'between';
+  f.amount_min.value = min ?? '';
+  f.amount_max.value = max ?? '';
+  syncAmountFields();
+  f.apply.value = rule?.start_date ? 'new' : 'past';
+  $('#apply-new-label').textContent = rule?.start_date
+    ? `Only transactions from ${LONG_DATE.format(new Date(`${rule.start_date}T00:00:00Z`))} on`
+    : 'Only new transactions, from today';
+  $('#rule-dialog').showModal();
+  f.pattern.focus();
+  schedulePreview();
+}
+
+ruleForm.addEventListener('input', (e) => {
+  if (e.target.name === 'amount_mode') syncAmountFields();
+  schedulePreview();
+});
+ruleForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = ruleBody();
+  try {
+    await api(editingRule ? `/api/rules/${encodeURIComponent(editingRule.id)}` : '/api/rules', { method: editingRule ? 'PUT' : 'POST', body });
+    $('#rule-dialog').close();
+    await afterCategoryChange();
+  } catch (err) {
+    const box = $('#rule-error');
+    box.textContent = err.message;
+    box.hidden = false;
+  }
+});
+$('#rule-cancel').addEventListener('click', () => $('#rule-dialog').close());
+$('#rule-delete').addEventListener('click', async () => {
+  if (!confirm('Delete this rule? Its transactions go back to automatic names and categories.')) return;
+  await api(`/api/rules/${encodeURIComponent(editingRule.id)}`, { method: 'DELETE' });
+  $('#rule-dialog').close();
+  await afterCategoryChange();
+});
+$('#new-rule').addEventListener('click', () => openRuleDialog(null));
+
 // ----------------------------------------------------------------- Router --
-const VIEWS = { overview: loadOverview, transactions: loadTransactions, budgets: loadBudgets, trends: loadTrends };
+const VIEWS = { overview: loadOverview, transactions: loadTransactions, budgets: loadBudgets, trends: loadTrends, rules: loadRulesView };
 
 function route() {
   const view = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : 'overview';
@@ -722,10 +923,10 @@ async function sync() {
 async function exportCsv() {
   const data = await api(`/api/transactions?${currentQuery({ limit: 5000, offset: 0 })}`);
   const acctById = Object.fromEntries(state.accounts.map((a) => [a.account_id, a]));
-  const rows = [['Date', 'Description', 'Merchant', 'Category', 'Account', 'Amount', 'Currency', 'Pending']];
+  const rows = [['Date', 'Name', 'Original description', 'Category', 'Parent category', 'Account', 'Amount', 'Currency', 'Pending']];
   for (const t of data.transactions) {
     const a = acctById[t.account_id];
-    rows.push([t.date, t.name, t.merchant_name || '', prettyCat(t.category), a ? acctLabel(a) : '', -t.amount, t.iso_currency_code || '', t.pending]);
+    rows.push([t.date, txName(t), t.name, prettyCat(t.category), parentOfCat(t.category), a ? acctLabel(a) : '', -t.amount, t.iso_currency_code || '', t.pending]);
   }
   const csv = rows.map((r) => r.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
   const link = document.createElement('a');

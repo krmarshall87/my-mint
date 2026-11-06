@@ -3,6 +3,7 @@ const path = require('path');
 const express = require('express');
 const { Configuration, PlaidApi, PlaidEnvironments, Products, CountryCode } = require('plaid');
 const { createStore } = require('./db');
+const { TREE, isKnownCategory, parentOf, isExcluded, isIncome, fromPlaid, fromLegacy, UNCATEGORIZED } = require('./categories');
 
 const {
   PLAID_CLIENT_ID,
@@ -305,21 +306,40 @@ app.patch('/api/accounts/:id', async (req, res) => {
 });
 
 // ------------------------------------------------------------ categories --
-// Plaid's category is the starting point. On top of it, in priority order:
-// your fix for one transaction, your merchant rules, and, only when Plaid says
-// OTHER or nothing, what this merchant usually is in your own history, then a
-// few built-in defaults for common merchants.
-const isUncategorized = (c) => !c || c === 'OTHER';
+// Categories follow the Mint-style tree in categories.js. Plaid's category is
+// the starting point (mapped onto the tree). On top of it, in priority order:
+// your fix for one transaction, then the first of your rules that matches
+// (top to bottom). Only when the result is still Uncategorized: what this
+// merchant usually is in your own history, then a few built-in defaults.
 const merchantText = (t) => `${t.merchant_name || ''} ${t.name || ''}`.toLowerCase().replace(/\s+/g, ' ').trim();
 const merchantKey = (t) =>
   (t.merchant_name || t.name || '').toLowerCase().split('*')[0].replace(/[^a-z&' ]+/g, ' ').replace(/\s+/g, ' ').trim();
 const DEFAULT_CATEGORIES = [
-  [/\b(doordash|grubhub|uber ?eats|instacart)\b/, 'FOOD_AND_DRINK'],
-  [/\b(amazon|amzn|ebay|walmart|target|costco|best ?buy|etsy)\b/, 'GENERAL_MERCHANDISE'],
-  [/\b(massage|spa|salon|barber|nails?)\b/, 'PERSONAL_CARE'],
-  [/\b(uber|lyft)\b/, 'TRANSPORTATION'],
-  [/\b(netflix|spotify|hulu|disney\+?|hbo|youtube premium)\b/, 'ENTERTAINMENT'],
+  [/\binstacart\b/, 'Groceries'],
+  [/\b(doordash|grubhub|uber ?eats)\b/, 'Restaurants'],
+  [/\bbest ?buy\b/, 'Electronics & Software'],
+  [/\b(amazon|amzn|ebay|walmart|target|costco|etsy)\b/, 'Shopping'],
+  [/\b(massage|spa|nails?)\b/, 'Spa & Massage'],
+  [/\b(salon|barber)\b/, 'Hair'],
+  [/\b(uber|lyft)\b/, 'Auto & Transport'],
+  [/\bspotify\b/, 'Music'],
+  [/\b(netflix|hulu|disney\+?|hbo)\b/, 'Movies & DVDs'],
 ];
+
+// ---- rules ----
+const MATCH_TYPES = ['contains', 'equals', 'starts'];
+const normalizeText = (p) => (typeof p === 'string' ? p.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80) : '');
+function ruleMatches(r, t) {
+  if (r.account_id && t.account_id !== r.account_id) return false;
+  if (r.start_date && t.date < r.start_date) return false;
+  const amt = Math.abs(t.amount);
+  if (r.amount_min != null && amt < r.amount_min - 0.005) return false;
+  if (r.amount_max != null && amt > r.amount_max + 0.005) return false;
+  const names = [t.merchant_name, t.name].filter(Boolean).map(normalizeText);
+  if (r.match_type === 'equals') return names.includes(r.pattern);
+  if (r.match_type === 'starts') return names.some((n) => n.startsWith(r.pattern));
+  return merchantText(t).includes(r.pattern);
+}
 
 // Everything below reads one categorized snapshot of all transactions, rebuilt
 // only after something changes (a sync, a delete, or one of your edits).
@@ -332,42 +352,44 @@ async function categorizedTransactions() {
   const version = dataVersion;
   const [{ transactions }, rules, overrides] = await Promise.all([
     store.listTransactions({ accountId: null, start: null, end: null, category: null, q: null, limit: 1e6, offset: 0 }),
-    store.listRules(),
+    store.listTxRules(),
     store.listOverrides(),
   ]);
   const override = new Map(overrides.map((o) => [o.transaction_id, o.category]));
-  const byLength = [...rules].sort((a, b) => b.pattern.length - a.pattern.length); // most specific rule wins
+  const plaidCat = (t) => fromPlaid(t.category, t.category_detailed);
 
   // What each merchant usually is, from transactions Plaid did categorize.
   const counts = new Map();
   for (const t of transactions) {
     const key = merchantKey(t);
-    if (!key || isUncategorized(t.category)) continue;
+    const c = plaidCat(t);
+    if (!key || c === UNCATEGORIZED) continue;
     const m = counts.get(key) || new Map();
-    m.set(t.category, (m.get(t.category) || 0) + 1);
+    m.set(c, (m.get(c) || 0) + 1);
     counts.set(key, m);
   }
   const usual = new Map([...counts].map(([key, m]) => [key, [...m].sort((a, b) => b[1] - a[1])[0][0]]));
 
   const rows = transactions.map((t) => {
     const text = merchantText(t);
-    let category = t.category;
+    const rule = rules.find((r) => ruleMatches(r, t)); // first match wins
+    let category = plaidCat(t);
     let source = 'plaid';
-    const rule = byLength.find((r) => text.includes(r.pattern));
     if (override.has(t.transaction_id)) { category = override.get(t.transaction_id); source = 'manual'; }
-    else if (rule) { category = rule.category; source = 'rule'; }
-    else if (isUncategorized(category)) {
+    else if (rule?.category) { category = rule.category; source = 'rule'; }
+    else if (category === UNCATEGORIZED) {
       const guess = usual.get(merchantKey(t)) || DEFAULT_CATEGORIES.find(([re]) => re.test(text))?.[1];
       if (guess) { category = guess; source = 'inferred'; }
     }
     return {
       ...t,
       plaid_category: t.category,
-      category: category || 'OTHER',
-      // Plaid's detail only describes Plaid's own category.
-      category_detailed: source === 'plaid' ? t.category_detailed : null,
+      category,
+      parent: parentOf(category),
       category_source: source,
-      rule: source === 'rule' ? rule.pattern : null,
+      excluded: isExcluded(category),
+      display_name: rule?.rename_to || null,
+      rule_id: rule ? rule.id : null,
     };
   });
   if (version === dataVersion) snapshot = { version, rows };
@@ -385,15 +407,20 @@ function parseFilters(q) {
   };
 }
 
+// A parent category filter includes its subcategories.
 const matchesFilters = (t, f) =>
   (!f.accountId || t.account_id === f.accountId) &&
   (!f.start || t.date >= f.start) &&
   (!f.end || t.date <= f.end) &&
-  (!f.category || t.category === f.category) &&
-  (!f.q || merchantText(t).includes(f.q));
+  (!f.category || t.category === f.category || t.parent === f.category) &&
+  (!f.q || merchantText(t).includes(f.q) || (t.display_name || '').toLowerCase().includes(f.q));
 
 // Newest first, with your categories applied, filtered in JS: identical for both stores.
 const allTransactions = async (filters = {}) => (await categorizedTransactions()).filter((t) => matchesFilters(t, filters));
+
+app.get('/api/category-tree', (_req, res) => {
+  res.json(TREE.map(([name, subs]) => ({ name, subs, excluded: isExcluded(name), income: isIncome(name) })));
+});
 
 app.get('/api/categories', async (_req, res) => {
   res.json([...new Set((await categorizedTransactions()).map((t) => t.category))].sort());
@@ -407,23 +434,27 @@ app.get('/api/transactions', async (req, res) => {
   res.json({ total: rows.length, transactions: rows.slice(offset, offset + limit) });
 });
 
-const normalizePattern = (p) => (typeof p === 'string' ? p.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 80) : '');
+// New rules go to the top, so they take effect over older, broader ones.
+async function topPosition() {
+  const rules = await store.listTxRules();
+  return rules.length ? Math.min(...rules.map((r) => r.position)) - 1 : 0;
+}
 
-// Recategorize one transaction, or (with `pattern`) every transaction whose
-// merchant text contains it, past and future. `category: null` resets one
-// transaction to automatic.
+// Recategorize one transaction, or (with `pattern`) create a "contains" rule
+// for every matching transaction. `category: null` resets one transaction.
 app.put('/api/transactions/:id/category', async (req, res) => {
   const { category = null } = req.body || {};
-  const pattern = normalizePattern(req.body?.pattern);
-  if (category !== null && !isCategory(category)) return res.status(400).json({ error_message: 'Invalid category' });
+  const pattern = normalizeText(req.body?.pattern);
+  if (category !== null && !isKnownCategory(category)) return res.status(400).json({ error_message: 'Invalid category' });
   const t = (await categorizedTransactions()).find((x) => x.transaction_id === req.params.id);
   if (!t) return res.status(404).json({ error_message: 'Unknown transaction' });
   if (pattern) {
     if (category === null) return res.status(400).json({ error_message: 'Choose a category for the rule' });
     if (pattern.length < 2) return res.status(400).json({ error_message: 'Make the matching text at least 2 characters' });
-    await store.setRule(pattern, category);
-    // The rule covers this transaction too, unless its text doesn't match.
-    await store.setOverride(t.transaction_id, merchantText(t).includes(pattern) ? null : category);
+    const rule = { id: crypto.randomUUID(), position: await topPosition(), match_type: 'contains', pattern, account_id: null, amount_min: null, amount_max: null, rename_to: null, category, start_date: null };
+    await store.saveTxRule(rule);
+    // The rule covers this transaction too, unless it doesn't match.
+    await store.setOverride(t.transaction_id, ruleMatches(rule, t) ? null : category);
   } else {
     await store.setOverride(t.transaction_id, category);
   }
@@ -431,49 +462,108 @@ app.put('/api/transactions/:id/category', async (req, res) => {
   res.json({ ok: true });
 });
 
+// Validate a rule from the editor. Returns [rule, error].
+async function parseRule(body = {}) {
+  const match_type = MATCH_TYPES.includes(body.match_type) ? body.match_type : 'contains';
+  const pattern = normalizeText(body.pattern);
+  if (pattern.length < 2) return [null, 'Enter at least 2 characters of the description to match'];
+  const money = (v) => (v === null || v === undefined || v === '' ? null : Number(v));
+  const amount_min = money(body.amount_min), amount_max = money(body.amount_max);
+  for (const v of [amount_min, amount_max]) if (v !== null && !(Number.isFinite(v) && v >= 0 && v < 1e9)) return [null, 'Amounts must be positive numbers'];
+  if (amount_min !== null && amount_max !== null && amount_min > amount_max) return [null, 'The minimum amount is larger than the maximum'];
+  const account_id = body.account_id || null;
+  if (account_id && !(await store.listAccounts()).some((a) => a.account_id === account_id)) return [null, 'Unknown account'];
+  const rename_to = typeof body.rename_to === 'string' && body.rename_to.trim() ? body.rename_to.trim().slice(0, 60) : null;
+  const category = body.category || null;
+  if (category && !isKnownCategory(category)) return [null, 'Invalid category'];
+  if (!rename_to && !category) return [null, 'Choose a new name, a category, or both'];
+  // "Only new transactions" starts the rule today; otherwise it covers your whole history.
+  const start_date = body.apply_past === false ? (isDate(body.start_date) ? body.start_date : isoDate(new Date())) : null;
+  return [{ match_type, pattern, account_id, amount_min: amount_min === null ? null : round2(amount_min), amount_max: amount_max === null ? null : round2(amount_max), rename_to, category, start_date }, null];
+}
+
+const ruleSample = (t) => ({ transaction_id: t.transaction_id, date: t.date, name: t.display_name || t.merchant_name || t.name, original: t.name, amount: t.amount, account_id: t.account_id, category: t.category });
+
 app.get('/api/rules', async (_req, res) => {
-  const [rules, rows] = await Promise.all([store.listRules(), categorizedTransactions()]);
-  res.json(rules.map((r) => ({ ...r, matches: rows.filter((t) => t.rule === r.pattern).length })));
+  const [rules, rows] = await Promise.all([store.listTxRules(), categorizedTransactions()]);
+  const applied = new Map();
+  for (const t of rows) if (t.rule_id) applied.set(t.rule_id, (applied.get(t.rule_id) || 0) + 1);
+  res.json(rules.map((r) => ({ ...r, matches: applied.get(r.id) || 0 })));
 });
 
-app.delete('/api/rules', async (req, res) => {
-  const pattern = normalizePattern(req.query.pattern);
-  if (!pattern) return res.status(400).json({ error_message: 'Missing pattern' });
-  await store.deleteRule(pattern);
+// What a rule would match, before you save it.
+app.post('/api/rules/preview', async (req, res) => {
+  const [rule, error] = await parseRule({ ...req.body, rename_to: req.body?.rename_to || 'x' });
+  if (!rule) return res.status(400).json({ error_message: error });
+  const rows = (await categorizedTransactions()).filter((t) => ruleMatches(rule, t));
+  // Rules above this one win when both match.
+  const shadowed = req.body?.id ? 0 : rows.filter((t) => t.rule_id).length;
+  res.json({ count: rows.length, shadowed, sample: rows.slice(0, 6).map(ruleSample) });
+});
+
+app.post('/api/rules', async (req, res) => {
+  const [rule, error] = await parseRule(req.body);
+  if (!rule) return res.status(400).json({ error_message: error });
+  const saved = { id: crypto.randomUUID(), position: await topPosition(), ...rule };
+  await store.saveTxRule(saved);
+  bumpData();
+  res.json(saved);
+});
+
+app.put('/api/rules/:id', async (req, res) => {
+  const existing = (await store.listTxRules()).find((r) => r.id === req.params.id);
+  if (!existing) return res.status(404).json({ error_message: 'Unknown rule' });
+  const [rule, error] = await parseRule({ ...req.body, start_date: req.body?.start_date ?? existing.start_date });
+  if (!rule) return res.status(400).json({ error_message: error });
+  const saved = { ...existing, ...rule };
+  await store.saveTxRule(saved);
+  bumpData();
+  res.json(saved);
+});
+
+app.delete('/api/rules/:id', async (req, res) => {
+  await store.deleteTxRule(req.params.id);
+  bumpData();
+  res.json({ ok: true });
+});
+
+// Reorder: `ids` lists every rule, top (applied first) to bottom.
+app.post('/api/rules/order', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const rules = await store.listTxRules();
+  const byId = new Map(rules.map((r) => [r.id, r]));
+  if (ids.length !== rules.length || !ids.every((id) => byId.has(id))) return res.status(400).json({ error_message: 'Send every rule id exactly once' });
+  for (const [i, id] of ids.entries()) if (byId.get(id).position !== i) await store.saveTxRule({ ...byId.get(id), position: i });
   bumpData();
   res.json({ ok: true });
 });
 
 // ------------------------------------------------------------- insights --
-// Money moving between your own accounts isn't income or spending: counting it
-// would double-count (a card payment, then the card purchases it pays for).
-const isInternalMove = (t) =>
-  t.category === 'TRANSFER_IN' ||
-  t.category === 'TRANSFER_OUT' ||
-  t.category_detailed === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT';
-
 const round2 = (n) => Math.round(n * 100) / 100;
-const merchantOf = (t) => t.merchant_name || t.name || 'Unknown';
+const merchantOf = (t) => t.display_name || t.merchant_name || t.name || 'Unknown';
 const isoDate = (d) => d.toISOString().slice(0, 10);
 const daysAgo = (n) => isoDate(new Date(Date.now() - n * 86400000));
 
-// Income is money in that Plaid categorizes as INCOME. Any other money in is a
-// refund and reduces spending in its own category.
-function aggregate(transactions, { includeInternal = false } = {}) {
-  const out = { income: 0, spending: 0, categories: new Map(), months: new Map(), merchants: new Map(), counted: 0 };
+// Income is money in the Income categories (and dividends). Any other money in
+// is a refund and reduces spending in its own category. Transfers, investment
+// trades and hidden transactions count as neither.
+function aggregate(transactions, { includeExcluded = false } = {}) {
+  const out = { income: 0, spending: 0, categories: new Map(), subs: new Map(), months: new Map(), merchants: new Map(), counted: 0 };
   for (const t of transactions) {
-    if (!includeInternal && isInternalMove(t)) continue;
+    if (!includeExcluded && t.excluded) continue;
     out.counted += 1;
     const month = t.date.slice(0, 7);
     const m = out.months.get(month) || { month, income: 0, spending: 0 };
-    if (t.category === 'INCOME') {
+    if (isIncome(t.category)) {
       out.income -= t.amount;
       m.income -= t.amount;
     } else {
       out.spending += t.amount;
       m.spending += t.amount;
-      const cat = t.category || 'UNCATEGORIZED';
-      out.categories.set(cat, (out.categories.get(cat) || 0) + t.amount);
+      out.categories.set(t.parent, (out.categories.get(t.parent) || 0) + t.amount);
+      const subs = out.subs.get(t.parent) || new Map();
+      subs.set(t.category, (subs.get(t.category) || 0) + t.amount);
+      out.subs.set(t.parent, subs);
       if (t.amount > 0) {
         const name = merchantOf(t);
         const mer = out.merchants.get(name) || { name, amount: 0, count: 0 };
@@ -488,32 +578,37 @@ function aggregate(transactions, { includeInternal = false } = {}) {
 }
 
 // Chart colors follow the category, not its rank in the current view: the seven
-// biggest spending categories of all time own slots 1-7 and everything else is
-// "Other", so changing a filter never repaints a category.
+// biggest parent categories of all time own slots 1-7 and everything else is
+// "Other", so changing a filter never repaints a category. Subcategories get
+// slots by their all-time rank within their parent, for the drill-down.
 const COLOR_SLOTS = 7;
-function categorySlots(allTime) {
-  const ranked = [...aggregate(allTime).categories].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
-  return new Map(ranked.slice(0, COLOR_SLOTS).map(([cat], i) => [cat, i + 1]));
-}
+const rankSlots = (entries) =>
+  new Map([...entries].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, COLOR_SLOTS).map(([c], i) => [c, i + 1]));
 
 // Aggregates for the charts, scoped by the same filters as the transaction list.
 // Done in JS so it's identical for every store; a single user's history is small.
 app.get('/api/insights', async (req, res) => {
   const filters = parseFilters(req.query);
   const [txns, allTime] = await Promise.all([allTransactions(filters), allTransactions()]);
-  // An explicit category filter (e.g. Transfer out) shows what was asked for instead of hiding it.
-  const agg = aggregate(txns, { includeInternal: !!filters.category });
-  const slots = categorySlots(allTime);
+  // An explicit category filter (e.g. Transfer) shows what was asked for instead of hiding it.
+  const agg = aggregate(txns, { includeExcluded: !!filters.category });
+  const all = aggregate(allTime);
+  const slots = rankSlots(all.categories);
 
   const categories = [];
   let other = 0, otherCount = 0;
   for (const [category, amount] of agg.categories) {
     if (amount <= 0) continue;
-    if (slots.has(category)) categories.push({ category, amount: round2(amount), slot: slots.get(category) });
+    const subSlots = rankSlots(all.subs.get(category) || []);
+    const subs = [...(agg.subs.get(category) || [])]
+      .filter(([, v]) => v > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([c, v]) => ({ category: c, amount: round2(v), slot: subSlots.get(c) || 0 }));
+    if (slots.has(category)) categories.push({ category, amount: round2(amount), slot: slots.get(category), subs });
     else { other += amount; otherCount += 1; }
   }
   categories.sort((a, b) => b.amount - a.amount);
-  if (other > 0) categories.push({ category: 'OTHER', amount: round2(other), slot: 0, categories: otherCount });
+  if (other > 0) categories.push({ category: 'OTHER', amount: round2(other), slot: 0, categories: otherCount, subs: [] });
 
   res.json({
     income: round2(agg.income),
@@ -533,22 +628,23 @@ app.get('/api/insights', async (req, res) => {
 });
 
 // --------------------------------------------------------------- budgets --
-// A budget is a monthly limit per Plaid category; INCOME is the expected income.
-const isCategory = (c) => typeof c === 'string' && /^[A-Z_]{2,64}$/.test(c);
+// A budget is a monthly limit for a parent category (covering all of its
+// subcategories) or a single subcategory. "Income" is the expected income.
+const isBudgetable = (c) => isKnownCategory(c) && (c === 'Income' || (!isExcluded(c) && !isIncome(c) && c !== UNCATEGORIZED));
 
 app.get('/api/budgets', async (_req, res) => res.json(await store.listBudgets()));
 
 app.put('/api/budgets/:category', async (req, res) => {
   const { category } = req.params;
   const amount = Number(req.body?.amount);
-  if (!isCategory(category)) return res.status(400).json({ error_message: 'Invalid category' });
+  if (!isBudgetable(category)) return res.status(400).json({ error_message: 'Invalid category' });
   if (!Number.isFinite(amount) || amount <= 0 || amount > 1e9) return res.status(400).json({ error_message: 'Amount must be a positive number' });
   await store.setBudget(category, round2(amount));
   res.json({ category, amount: round2(amount) });
 });
 
 app.delete('/api/budgets/:category', async (req, res) => {
-  if (!isCategory(req.params.category)) return res.status(400).json({ error_message: 'Invalid category' });
+  if (!isKnownCategory(req.params.category)) return res.status(400).json({ error_message: 'Invalid category' });
   await store.deleteBudget(req.params.category);
   res.json({ ok: true });
 });
@@ -569,22 +665,29 @@ async function budgetSummary(month) {
   const [txns, budgets] = await Promise.all([allTransactions({ start, end }), store.listBudgets()]);
   const agg = aggregate(txns);
   const budgetOf = new Map(budgets.map((b) => [b.category, b.amount]));
+  const spentOn = (c) => {
+    if (parentOf(c) === c) return [...(agg.subs.get(c) || [])].reduce((s, [, v]) => s + v, 0);
+    return agg.subs.get(parentOf(c))?.get(c) || 0;
+  };
   const spending = budgets
-    .filter((b) => b.category !== 'INCOME')
-    .map((b) => ({ category: b.category, budget: b.amount, spent: round2(Math.max(0, agg.categories.get(b.category) || 0)) }))
+    .filter((b) => b.category !== 'Income')
+    .map((b) => ({ category: b.category, parent: parentOf(b.category), budget: b.amount, spent: round2(Math.max(0, spentOn(b.category))) }))
     .sort((a, b) => b.spent / b.budget - a.spent / a.budget);
-  const unbudgeted = [...agg.categories].filter(([c]) => !budgetOf.has(c)).reduce((s, [, v]) => s + v, 0);
-  const budgetedSpending = spending.reduce((s, b) => s + b.budget, 0);
+  // Spending no budget covers (a parent budget covers its subcategories).
+  let unbudgeted = 0;
+  for (const [parent, subs] of agg.subs) for (const [c, v] of subs) if (!budgetOf.has(c) && !budgetOf.has(parent)) unbudgeted += v;
+  // Don't count a subcategory budget twice when its parent has a budget too.
+  const budgetedSpending = spending.filter((b) => b.parent === b.category || !budgetOf.has(b.parent)).reduce((s, b) => s + b.budget, 0);
   return {
     month,
     progress,
-    income: { actual: round2(agg.income), budget: budgetOf.get('INCOME') ?? null },
+    income: { actual: round2(agg.income), budget: budgetOf.get('Income') ?? null },
     spending,
     unbudgeted: round2(Math.max(0, unbudgeted)),
     totals: {
       income: round2(agg.income),
       spending: round2(agg.spending),
-      budgetedIncome: budgetOf.get('INCOME') ?? null,
+      budgetedIncome: budgetOf.get('Income') ?? null,
       budgetedSpending: round2(budgetedSpending),
       leftOver: round2(agg.income - agg.spending),
     },
@@ -599,7 +702,7 @@ app.get('/api/budget-summary', async (req, res) => {
 
 // ---------------------------------------------------------------- alerts --
 // Computed from the data on each request, so there's nothing to keep in sync.
-const pretty = (c) => (c ? c.toLowerCase().replace(/_/g, ' ').replace(/^\w/, (x) => x.toUpperCase()) : 'Uncategorized');
+const pretty = (c) => (c === 'OTHER' ? 'Other' : c || UNCATEGORIZED);
 const usd = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
 const LARGE_PURCHASE = () => Number(process.env.ALERT_LARGE_AMOUNT || 500);
 const MAX_ALERTS = 12;
@@ -646,8 +749,8 @@ app.get('/api/alerts', async (_req, res) => {
     return a ? `${a.display_name}${a.mask ? ` ••${a.mask}` : ''}` : 'your account';
   };
   for (const t of await allTransactions({ start: daysAgo(6), end: today })) {
-    if (isInternalMove(t)) continue;
-    if (t.category === 'INCOME' && t.amount < 0) {
+    if (t.excluded) continue;
+    if (isIncome(t.category) && t.amount < 0) {
       add(`income:${t.transaction_id}`, 'good', t.date, 'You received ', b(usd(-t.amount)), ' from ', b(merchantOf(t)), ' in ', b(acctName(t.account_id)), '.');
     } else if (t.amount >= LARGE_PURCHASE()) {
       add(`large:${t.transaction_id}`, 'info', t.date, 'Your ', b(usd(t.amount)), ' purchase from ', b(merchantOf(t)), t.pending ? ' is pending on ' : ' has cleared on ', b(acctName(t.account_id)), '.');
@@ -666,10 +769,41 @@ app.use((err, _req, res, _next) => {
 
 const SYNC_INTERVAL_HOURS = Number(process.env.SYNC_INTERVAL_HOURS ?? 6);
 
+// Budgets, fixes and rules saved before the Mint-style tree used Plaid's
+// category names (FOOD_AND_DRINK…). Convert them once; safe to re-run.
+async function migrateLegacyCategories() {
+  let changed = 0;
+  for (const b of await store.listBudgets()) {
+    if (isKnownCategory(b.category)) continue;
+    const to = fromLegacy(b.category);
+    const have = new Set((await store.listBudgets()).map((x) => x.category));
+    if (to && !have.has(to)) await store.setBudget(to, b.amount);
+    await store.deleteBudget(b.category);
+    changed += 1;
+  }
+  for (const o of await store.listOverrides()) {
+    if (isKnownCategory(o.category)) continue;
+    await store.setOverride(o.transaction_id, fromLegacy(o.category) || UNCATEGORIZED);
+    changed += 1;
+  }
+  // Old one-field rules ("contains X → category") become full rules.
+  let position = 0;
+  for (const r of await store.listRules()) {
+    await store.saveTxRule({
+      id: crypto.randomUUID(), position: position++, match_type: 'contains', pattern: r.pattern, account_id: null,
+      amount_min: null, amount_max: null, rename_to: null, category: fromLegacy(r.category) || UNCATEGORIZED, start_date: null,
+    });
+    await store.deleteRule(r.pattern);
+    changed += 1;
+  }
+  if (changed) console.log(`migrated ${changed} saved budgets, fixes and rules to the new categories`);
+}
+
 async function initDatabase() {
   for (let attempt = 1; ; attempt++) {
     try {
       await store.init();
+      await migrateLegacyCategories();
       dbReady = true;
       console.log('database ready');
       return;

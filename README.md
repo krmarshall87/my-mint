@@ -3,12 +3,14 @@
 A small personal finance app that links your bank accounts through [Plaid](https://plaid.com), in the spirit of the old Mint:
 
 - **Overview:** accounts grouped into cash, credit cards, loans and investments, with balances and net worth. Alerts for budget overages, unusual spending, large purchases and income. This month's budgets as progress bars, a 12-month cash-flow chart, and recent transactions.
-- **Transactions:** search and filter by account, category and period; export to CSV. Click a category to fix it, for one transaction or as a rule ("contains *amazon* → General merchandise") that applies to past and future transactions. When Plaid has no category ("Other"), the app uses what that merchant usually is in your history, then a few built-in defaults. Guessed categories are shown in italics.
+- **Transactions:** search and filter by account, category and period; export to CSV. Click a category to fix it for one transaction, or save it as a rule.
+- **Categories:** Mint's category tree (Auto & Transport › Gas & Fuel, Food & Dining › Groceries, …). Plaid's detailed categories are mapped onto it, so a supermarket lands in Groceries and a café in Coffee Shops. When Plaid has no category, the app uses what that merchant usually is in your history, then a few built-in defaults; guesses are shown in italics.
+- **Rules:** Mint-style rules on the Rules tab. If the description contains / starts with / is exactly some text (optionally in one account, for an amount or amount range), rename the transaction and/or categorize it. Choose *Hide from Budgets & Trends* to keep a transaction without counting it. Rules apply to past and future transactions, or only new ones. They run top to bottom (first match wins), can be reordered, and show a live preview of what they'll match.
 - **Account names:** generic bank names like "CREDIT CARD" are replaced with the card's official name or "<Bank> Credit Card". Click ✎ next to an account to rename it.
 - **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
 - **Trends:** spending by category as a pie or bars, cash flow by month, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
 
-Income counts only deposits that Plaid categorizes as `INCOME`. Other money in is a refund and reduces spending. Transfers between your own accounts and credit-card payments are left out of both.
+Income is the Income categories (Paycheck, Bonus, …) plus Dividend & Cap Gains. Other money in is a refund and reduces spending. Transfers, credit-card payments, investment trades and anything in *Hide from Budgets & Trends* are left out of both.
 
 - **Backend:** Node + Express, using the official `plaid` SDK. It calls `/link/token/create`, `/item/public_token/exchange` and `/transactions/sync`.
 - **Storage:** CockroachDB (or any Postgres) when `DATABASE_URL` is set. Tables are created automatically on startup. Without it, data goes to a local JSON file (`data/store.json`) for development.
@@ -67,13 +69,17 @@ All routes need Basic Auth.
 | DELETE | `/api/items/:id` | Remove an Item from Plaid and delete its stored data |
 | GET | `/api/accounts` | List accounts with balances |
 | GET | `/api/categories` | List categories that appear in your transactions |
-| GET | `/api/budgets` | List budgets (`INCOME` is the expected monthly income) |
+| GET | `/api/budgets` | List budgets (`Income` is the expected monthly income; a parent category covers its subcategories) |
 | PUT | `/api/budgets/:category` | Create or update a monthly budget: `{ "amount": 400 }` |
 | DELETE | `/api/budgets/:category` | Remove a budget |
 | GET | `/api/budget-summary?month=YYYY-MM` | Income, spending per budgeted category, and left over for one month |
 | GET | `/api/alerts` | Current alerts, computed from your data (broken connections, budgets, unusual spending, large purchases ≥ `ALERT_LARGE_AMOUNT`, income) |
 | PUT | `/api/transactions/:id/category` | `{ "category": "TRAVEL" }` fixes one transaction (`null` resets it); add `"pattern": "amazon"` to make it a rule |
-| GET / DELETE | `/api/rules` | List rules with match counts, or delete one (`?pattern=amazon`) |
+| GET / POST | `/api/rules` | List rules (in order, with how many transactions each applies to), or create one: `{ match_type: "contains"\|"starts"\|"equals", pattern, account_id?, amount_min?, amount_max?, rename_to?, category?, apply_past }` |
+| PUT / DELETE | `/api/rules/:id` | Update or delete a rule |
+| POST | `/api/rules/order` | `{ "ids": [...] }` sets the order, top first |
+| POST | `/api/rules/preview` | What a rule would match, before saving |
+| GET | `/api/category-tree` | The category tree |
 | PATCH | `/api/accounts/:id` | `{ "nickname": "Freedom" }` renames an account (`""` clears it) |
 | GET | `/api/insights` | Totals, income and spending by month, spending by category and top merchants. Same filters as `/api/transactions`; transfers between your own accounts and credit-card payments are excluded. |
 | GET | `/api/transactions` | Filters: `q`, `account_id`, `category`, `start`, `end`, `limit`, `offset` |
