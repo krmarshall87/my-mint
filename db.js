@@ -81,6 +81,20 @@ const SCHEMA = [
     category TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
+  // Mint-style rules, applied top to bottom (lowest position first).
+  `CREATE TABLE IF NOT EXISTS tx_rules (
+    id TEXT PRIMARY KEY,
+    position INT NOT NULL,
+    match_type TEXT NOT NULL,
+    pattern TEXT NOT NULL,
+    account_id TEXT,
+    amount_min NUMERIC,
+    amount_max NUMERIC,
+    rename_to TEXT,
+    category TEXT,
+    start_date DATE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
   `CREATE TABLE IF NOT EXISTS category_overrides (
     transaction_id TEXT PRIMARY KEY,
     category TEXT NOT NULL
@@ -203,6 +217,32 @@ class PgStore {
       current_balance: r.current_balance === null ? null : Number(r.current_balance),
       available_balance: r.available_balance === null ? null : Number(r.available_balance),
     }));
+  }
+
+  async listTxRules() {
+    const { rows } = await this.pool.query(
+      `SELECT id, position, match_type, pattern, account_id, amount_min, amount_max, rename_to, category,
+              start_date::text AS start_date
+       FROM tx_rules ORDER BY position, created_at`,
+    );
+    const num = (v) => (v === null ? null : Number(v));
+    return rows.map((r) => ({ ...r, position: Number(r.position), amount_min: num(r.amount_min), amount_max: num(r.amount_max) }));
+  }
+
+  async saveTxRule(r) {
+    await this.pool.query(
+      `INSERT INTO tx_rules (id, position, match_type, pattern, account_id, amount_min, amount_max, rename_to, category, start_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       ON CONFLICT (id) DO UPDATE SET position = EXCLUDED.position, match_type = EXCLUDED.match_type,
+         pattern = EXCLUDED.pattern, account_id = EXCLUDED.account_id, amount_min = EXCLUDED.amount_min,
+         amount_max = EXCLUDED.amount_max, rename_to = EXCLUDED.rename_to, category = EXCLUDED.category,
+         start_date = EXCLUDED.start_date`,
+      [r.id, r.position, r.match_type, r.pattern, r.account_id, r.amount_min, r.amount_max, r.rename_to, r.category, r.start_date],
+    );
+  }
+
+  async deleteTxRule(id) {
+    await this.pool.query('DELETE FROM tx_rules WHERE id = $1', [id]);
   }
 
   async listRules() {
@@ -369,6 +409,22 @@ class FileStore {
     return Object.values(this.data.accounts)
       .map((a) => ({ ...a, institution_name: this.data.items[a.item_id]?.institution_name, nickname: this.data.nicknames?.[a.account_id] ?? null }))
       .sort((a, b) => `${a.institution_name}${a.name}`.localeCompare(`${b.institution_name}${b.name}`));
+  }
+
+  async listTxRules() {
+    return [...(this.data.txRules || [])].sort((a, b) => a.position - b.position);
+  }
+
+  async saveTxRule(r) {
+    const list = (this.data.txRules ||= []);
+    const i = list.findIndex((x) => x.id === r.id);
+    if (i >= 0) list[i] = { ...r }; else list.push({ ...r });
+    this.save();
+  }
+
+  async deleteTxRule(id) {
+    this.data.txRules = (this.data.txRules || []).filter((r) => r.id !== id);
+    this.save();
   }
 
   async listRules() {
