@@ -7,6 +7,7 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 - **Always merge your own PRs.** Branch, push, open the PR, and once your checks pass, mark it ready and merge it into `master`. You don't need to ask first. Merging deploys to Render.
 - Before pushing, run `node --check server.js db.js public/app.js`. If you changed `db.js`, also exercise both stores (the JSON file and a local Postgres). Keep SQL portable between Postgres and CockroachDB: no `to_char`, no advisory locks, one DDL statement per query, wrap `count()`/INT8 results in `Number()` (node-pg returns them as strings), and retry transactions on SQLSTATE `40001`.
 - Test anything that touches Plaid against the **sandbox** (`PLAID_ENV=sandbox`). To link the test bank without the UI, call `sandboxPublicTokenCreate` (`ins_109508`, First Platypus Bank, `initial_products: ['transactions']`), then POST to `/api/exchange`. Test the Link pop-up itself with Playwright using `user_good` / `pass_good`.
+- `render.yaml` entries with `value:` are re-applied by Render on every Blueprint sync and overwrite dashboard edits. Put anything managed in the dashboard under `sync: false`. `PLAID_ENV` is set to `production` there; use a local `.env` with `PLAID_ENV=sandbox` for testing.
 - Never commit secrets: no Plaid keys, `.env`, `data/`, or access tokens. Pass keys as environment variables only.
 
 ## Data
