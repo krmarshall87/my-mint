@@ -20,6 +20,12 @@ services:
         sync: false
       - key: APP_PASSWORD
         sync: false
+      # Encrypts Plaid access tokens in the database. Generated once by Render;
+      # don't change it later or existing connections can't be decrypted.
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      - key: SYNC_INTERVAL_HOURS
+        value: "6"
       - key: DATABASE_URL
         fromDatabase:
           name: my-mint-db

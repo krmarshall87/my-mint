@@ -36,7 +36,13 @@ function openLink(linkToken, { receivedRedirectUri, updateMode } = {}) {
       try {
         if (!updateMode) {
           setStatus(`Importing ${metadata.institution?.name || 'account'}…`);
-          await api('/api/exchange', { method: 'POST', body: { public_token, institution: metadata.institution } });
+          const { sync: first } = await api('/api/exchange', { method: 'POST', body: { public_token, institution: metadata.institution } });
+          // Plaid may still be preparing history for a new connection; poll briefly.
+          for (let i = 0; first?.pending_initial_pull && i < 10; i++) {
+            await new Promise((r) => setTimeout(r, 3000));
+            const { results } = await api('/api/sync', { method: 'POST' });
+            if (!results.some((r) => r.pending_initial_pull)) break;
+          }
         } else {
           await api('/api/sync', { method: 'POST' });
         }

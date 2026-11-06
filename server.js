@@ -33,6 +33,37 @@ const plaid = new PlaidApi(
   }),
 );
 const store = createStore();
+
+// ------------------------------------------------- token encryption --
+// Plaid access tokens are encrypted at rest (AES-256-GCM) when ENCRYPTION_KEY is set.
+const ENC_KEY = process.env.ENCRYPTION_KEY
+  ? crypto.createHash('sha256').update(process.env.ENCRYPTION_KEY).digest()
+  : null;
+if (!ENC_KEY && process.env.NODE_ENV === 'production') {
+  console.warn('ENCRYPTION_KEY is not set; Plaid access tokens will be stored unencrypted.');
+}
+function encryptToken(plain) {
+  if (!ENC_KEY) return plain;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv);
+  const ct = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return 'enc:v1:' + Buffer.concat([iv, cipher.getAuthTag(), ct]).toString('base64');
+}
+function decryptToken(stored) {
+  if (!stored.startsWith('enc:v1:')) return stored;
+  if (!ENC_KEY) throw new Error('Stored access token is encrypted but ENCRYPTION_KEY is not set');
+  const buf = Buffer.from(stored.slice(7), 'base64');
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, buf.subarray(0, 12));
+  decipher.setAuthTag(buf.subarray(12, 28));
+  return Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8');
+}
+const withPlainToken = (item) => item && { ...item, access_token: decryptToken(item.access_token) };
+const items = {
+  list: async () => (await store.listItems()).map(withPlainToken),
+  get: async (id) => withPlainToken(await store.getItem(id)),
+  save: (item) => store.saveItem({ ...item, access_token: encryptToken(item.access_token) }),
+};
+
 const app = express();
 app.set('trust proxy', 1);
 app.use(express.json());
@@ -44,14 +75,51 @@ function safeEqual(a, b) {
   const hb = crypto.createHash('sha256').update(b).digest();
   return crypto.timingSafeEqual(ha, hb);
 }
+
+// Security headers. Plaid Link loads its script and iframe from cdn.plaid.com.
+app.use((_req, res, next) => {
+  res.set({
+    'Content-Security-Policy': [
+      "default-src 'self'",
+      "script-src 'self' https://cdn.plaid.com",
+      "frame-src https://cdn.plaid.com",
+      "connect-src 'self'",
+      "img-src 'self' data: https:",
+      "style-src 'self' 'unsafe-inline'", // Plaid's link-initialize.js sets inline styles
+      "frame-ancestors 'none'",
+      "base-uri 'none'",
+      "form-action 'self'",
+    ].join('; '),
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'no-store',
+  });
+  next();
+});
+
 app.get('/healthz', (_req, res) => res.send('ok'));
+
+// Lock out an IP after too many wrong passwords.
+const MAX_FAILURES = 10;
+const LOCKOUT_MS = 15 * 60 * 1000;
+const failures = new Map(); // ip -> { count, first }
 app.use((req, res, next) => {
   if (!APP_PASSWORD) return next();
+  const now = Date.now();
+  const rec = failures.get(req.ip);
+  if (rec && now - rec.first > LOCKOUT_MS) failures.delete(req.ip);
+  if ((failures.get(req.ip)?.count || 0) >= MAX_FAILURES) {
+    return res.status(429).send('Too many failed login attempts. Try again later.');
+  }
   const [scheme, encoded] = (req.headers.authorization || '').split(' ');
   if (scheme === 'Basic' && encoded) {
     const decoded = Buffer.from(encoded, 'base64').toString();
     const password = decoded.slice(decoded.indexOf(':') + 1);
     if (safeEqual(password, APP_PASSWORD)) return next();
+    const r = failures.get(req.ip) || { count: 0, first: now };
+    r.count += 1;
+    failures.set(req.ip, r);
   }
   res.set('WWW-Authenticate', 'Basic realm="my-mint", charset="UTF-8"').status(401).send('Authentication required');
 });
@@ -100,6 +168,23 @@ async function syncItem(item) {
   throw new Error('Transactions kept changing during sync; try again.');
 }
 
+// Sync every linked Item. Concurrent callers share one run so cursors never race.
+let syncInFlight = null;
+function syncAll() {
+  syncInFlight ||= (async () => {
+    const results = [];
+    for (const item of await items.list()) {
+      try {
+        results.push({ item_id: item.item_id, ...(await syncItem(item)) });
+      } catch (err) {
+        results.push({ item_id: item.item_id, error: plaidError(err) });
+      }
+    }
+    return results;
+  })().finally(() => { syncInFlight = null; });
+  return syncInFlight;
+}
+
 app.post('/api/link-token', async (req, res) => {
   try {
     const request = {
@@ -112,7 +197,7 @@ app.post('/api/link-token', async (req, res) => {
     const itemId = req.body?.item_id;
     if (itemId) {
       // Update mode: re-authenticate an existing connection.
-      const item = await store.getItem(itemId);
+      const item = await items.get(itemId);
       if (!item) return res.status(404).json({ error_message: 'Unknown item' });
       request.access_token = item.access_token;
     } else {
@@ -137,10 +222,10 @@ app.post('/api/exchange', async (req, res) => {
       institution_id: institution?.institution_id || null,
       institution_name: institution?.name || 'Bank',
     };
-    await store.saveItem(item);
+    await items.save(item);
     let sync = null;
     try {
-      sync = await syncItem(await store.getItem(item.item_id));
+      sync = await syncItem(await items.get(item.item_id));
     } catch (err) {
       console.error('initial sync', plaidError(err));
     }
@@ -152,24 +237,15 @@ app.post('/api/exchange', async (req, res) => {
 });
 
 app.post('/api/sync', async (_req, res) => {
-  const results = [];
-  for (const item of await store.listItems()) {
-    try {
-      results.push({ item_id: item.item_id, ...(await syncItem(item)) });
-    } catch (err) {
-      results.push({ item_id: item.item_id, error: plaidError(err) });
-    }
-  }
-  res.json({ results });
+  res.json({ results: await syncAll() });
 });
 
 app.get('/api/items', async (_req, res) => {
-  const items = await store.listItems();
-  res.json(items.map(({ access_token, cursor, ...rest }) => rest));
+  res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => rest));
 });
 
 app.delete('/api/items/:id', async (req, res) => {
-  const item = await store.getItem(req.params.id);
+  const item = await items.get(req.params.id);
   if (!item) return res.status(404).json({ error_message: 'Unknown item' });
   try {
     await plaid.itemRemove({ access_token: item.access_token });
@@ -208,6 +284,15 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error_message: 'Internal error' });
 });
 
+const SYNC_INTERVAL_HOURS = Number(process.env.SYNC_INTERVAL_HOURS ?? 6);
+
 store.init().then(() => {
   app.listen(PORT, () => console.log(`my-mint listening on :${PORT} (Plaid ${PLAID_ENV})`));
+  if (SYNC_INTERVAL_HOURS > 0) {
+    setInterval(() => {
+      syncAll()
+        .then((r) => console.log('background sync', JSON.stringify(r.map(({ error, ...x }) => (error ? { ...x, error: error.error_code } : x)))))
+        .catch((err) => console.error('background sync failed', err));
+    }, SYNC_INTERVAL_HOURS * 3600 * 1000).unref();
+  }
 });
