@@ -157,8 +157,7 @@ function manualLine(a) {
 }
 
 const ERROR_TEXT = {
-  ADDITIONAL_CONSENT_REQUIRED: 'Needs your OK to share more details (investments or card statements). Click reconnect.',
-  ITEM_LOGIN_REQUIRED: 'Your bank needs you to sign in again. Click reconnect.',
+  ITEM_LOGIN_REQUIRED: 'Sign-in expired. Click reconnect.',
 };
 
 function renderAccounts() {
@@ -190,9 +189,11 @@ function renderAccounts() {
       <div class="group-head" style="cursor:default"><span>Connections</span></div>
       ${state.items.map((i) => `<div class="inst-actions">
           <span>${esc(i.institution_name)}${i.manual ? ' <small class="muted">(manual)</small>' : ''}</span>
-          ${i.error ? `<button class="link-btn" data-relink="${esc(i.item_id)}">reconnect</button>` : ''}
+          ${i.consent_for
+            ? `<button class="link-btn consent-btn" data-relink="${esc(i.item_id)}" title="Opens Plaid so this bank can share ${esc(i.consent_for)}. Only needed once.">Share ${esc(i.consent_for)}</button>`
+            : i.error ? `<button class="link-btn" data-relink="${esc(i.item_id)}">reconnect</button>` : ''}
           <button class="link-btn danger" data-remove="${esc(i.item_id)}">remove</button>
-        </div>${i.error ? `<div class="inst-error">${esc(i.error_text || ERROR_TEXT[i.error] || i.error)}</div>` : ''}`).join('')}
+        </div>${i.error && !i.consent_for ? `<div class="inst-error">${esc(ERROR_TEXT[i.error] || `Connection problem (${i.error}).`)}</div>` : ''}`).join('')}
     </section>` : '');
 
   const net = state.accounts.reduce((s, a) => s + signedBalance(a), 0);
@@ -1342,9 +1343,25 @@ $('#csv-form').addEventListener('submit', async (e) => {
 
 
 
+// Per-bank notes for an optional product; banks waiting for your OK share one note.
+function consentNotes(status, what, texts) {
+  const waiting = status.filter((x) => x.status === 'ADDITIONAL_CONSENT_REQUIRED').map((x) => x.institution);
+  const out = [];
+  if (waiting.length) {
+    const p = el('p', { class: 'note-box' });
+    p.append(el('strong', {}, waiting.join(', ')), ` ${waiting.length > 1 ? 'need' : 'needs'} your OK to share ${what}. Click “Share” next to ${waiting.length > 1 ? 'each bank' : 'it'} in the accounts list.`);
+    out.push(p);
+  }
+  for (const x of status.filter((s) => s.status && s.status !== 'ADDITIONAL_CONSENT_REQUIRED')) {
+    const p = el('p', { class: 'note-box' });
+    p.append(el('strong', {}, x.institution), ` ${texts[x.status] || `couldn’t share ${what} (${x.status}).`}`);
+    out.push(p);
+  }
+  return out;
+}
+
 // ----------------------------------------------------------- Credit cards --
 const CARD_STATUS = {
-  ADDITIONAL_CONSENT_REQUIRED: 'needs your OK to share card statements (balances, due dates and APRs). Click “reconnect” next to it in the accounts list.',
   PRODUCTS_NOT_SUPPORTED: 'doesn’t share card statements through Plaid. Click Edit on its cards to add them yourself.',
   INVALID_PRODUCT: 'can’t share card statements yet: turn on the Liabilities product in your Plaid dashboard, or click Edit to add them yourself.',
   PRODUCT_NOT_READY: 'is still preparing card statements. They’ll appear after the next update.',
@@ -1373,8 +1390,7 @@ async function loadCards() {
     $('#card-window').textContent = `Planning through ${shortDate(d.end)}; bills and paychecks are looked at through ${shortDate(d.through)} so next month’s bills stay covered.`;
 
     const status = $('#card-status');
-    status.replaceChildren(...d.status.filter((x) => x.status).map((x) =>
-      noteBox('', strong(x.institution), ` ${CARD_STATUS[x.status] || `couldn’t share card statements (${x.status}).`}`)));
+    status.replaceChildren(...consentNotes(d.status, 'card statements', CARD_STATUS));
 
     const warn = $('#card-warnings');
     warn.replaceChildren();
@@ -1605,7 +1621,6 @@ const INV_TYPES = [
 const invTypeLabel = (t) => INV_TYPES.find(([k]) => k === t)?.[1] || 'Other';
 const invTypeColor = (t) => { const i = INV_TYPES.findIndex(([k]) => k === t); return i >= 0 ? `var(--cat-${i + 1})` : 'var(--cat-other)'; };
 const INV_STATUS = {
-  ADDITIONAL_CONSENT_REQUIRED: 'needs your OK to share investment details. Click “reconnect” next to it in the accounts list.',
   PRODUCTS_NOT_SUPPORTED: 'doesn’t share investment details through Plaid. Balances still update.',
   INVALID_PRODUCT: 'can’t share investment details yet: turn on the Investments product in your Plaid dashboard. Balances still update.',
   PRODUCT_NOT_READY: 'is still preparing investment details. They’ll appear after the next update.',
@@ -1617,11 +1632,7 @@ async function loadInvestments() {
     const d = await api('/api/investments');
     const notes = $('#inv-status');
     notes.replaceChildren();
-    for (const s of d.status.filter((x) => x.status)) {
-      const p = el('p', { class: 'note-box' });
-      p.append(el('strong', {}, s.institution), ` ${INV_STATUS[s.status] || `couldn’t share investment details (${s.status}).`}`);
-      notes.appendChild(p);
-    }
+    notes.append(...consentNotes(d.status, 'investment details', INV_STATUS));
     $('#inv-value').textContent = money(d.value);
     const gainEl = $('#inv-gain');
     gainEl.textContent = d.cost_basis ? gainText(d.gain, d.gain_pct) : '—';
