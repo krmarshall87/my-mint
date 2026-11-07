@@ -29,6 +29,7 @@
       <a href="#bills" data-view="bills">Bills</a>
       <a href="#budgets" data-view="budgets">Budgets</a>
       <a href="#trends" data-view="trends">Trends</a>
+      <a href="#investments" data-view="investments">Investments</a>
       <a href="#rules" data-view="rules">Rules</a>
     </nav>
   </header>
@@ -264,6 +265,29 @@
             <details class="chart-table"><summary>View as table</summary><div id="table-merchants"></div></details>
           </div>
         </div>
+      </section>
+
+      <!-- --------------------------------------------------- Investments -->
+      <section id="view-investments" class="view" hidden>
+        <div>
+          <h1>Investments</h1>
+          <p class="muted">Holdings and activity from your investment accounts, refreshed with every sync. Dividends and interest count as income; buys, sells and money moved in or out don’t count as income or spending.</p>
+        </div>
+        <div id="inv-status"></div>
+        <div class="summary">
+          <div><span>Total value</span><strong id="inv-value">$0</strong></div>
+          <div><span>Gain / loss</span><strong id="inv-gain">—</strong></div>
+          <div><span>Accounts</span><strong id="inv-accounts-count">0</strong></div>
+          <div><span>Holdings</span><strong id="inv-holdings-count">0</strong></div>
+        </div>
+        <div class="panel chart-card">
+          <div class="panel-head"><div><h2>Allocation</h2><p class="muted subhead">By type of investment, all accounts</p></div></div>
+          <div class="panel-body">
+            <div id="inv-allocation" class="chart" data-label="Investments by type"></div>
+            <details class="chart-table"><summary>View as table</summary><div id="inv-allocation-table"></div></details>
+          </div>
+        </div>
+        <div id="inv-accounts"></div>
       </section>
 
       <!-- --------------------------------------------------------- Rules -->

@@ -116,6 +116,22 @@ const SCHEMA = [
     balance NUMERIC NOT NULL,
     PRIMARY KEY (date, account_id)
   )`,
+  // What each investment account holds, replaced on every sync.
+  `CREATE TABLE IF NOT EXISTS holdings (
+    account_id TEXT NOT NULL,
+    security_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    ticker TEXT,
+    name TEXT,
+    type TEXT,
+    quantity NUMERIC,
+    price NUMERIC,
+    value NUMERIC,
+    cost_basis NUMERIC,
+    iso_currency_code TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (account_id, security_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS account_nicknames (
     account_id TEXT PRIMARY KEY,
     nickname TEXT NOT NULL
@@ -170,6 +186,7 @@ class PgStore {
     await this.pool.query('DELETE FROM category_overrides WHERE transaction_id IN (SELECT transaction_id FROM transactions WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM account_nicknames WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM manual_accounts WHERE item_id = $1', [itemId]);
+    await this.pool.query('DELETE FROM holdings WHERE item_id = $1', [itemId]);
     await this.pool.query('DELETE FROM balance_snapshots WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM items WHERE item_id = $1', [itemId]);
   }
@@ -292,6 +309,35 @@ class PgStore {
   async listSnapshots() {
     const { rows } = await this.pool.query('SELECT date::text AS date, account_id, balance FROM balance_snapshots ORDER BY date');
     return rows.map((r) => ({ ...r, balance: Number(r.balance) }));
+  }
+
+  async replaceHoldings(itemId, rows) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM holdings WHERE item_id = $1', [itemId]);
+      for (const h of rows) {
+        await client.query(
+          `INSERT INTO holdings (account_id, security_id, item_id, ticker, name, type, quantity, price, value, cost_basis, iso_currency_code)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           ON CONFLICT (account_id, security_id) DO UPDATE SET quantity = EXCLUDED.quantity, price = EXCLUDED.price,
+             value = EXCLUDED.value, cost_basis = EXCLUDED.cost_basis, updated_at = now()`,
+          [h.account_id, h.security_id, itemId, h.ticker, h.name, h.type, h.quantity, h.price, h.value, h.cost_basis, h.iso_currency_code],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listHoldings() {
+    const { rows } = await this.pool.query('SELECT * FROM holdings ORDER BY value DESC');
+    const num = (v) => (v === null ? null : Number(v));
+    return rows.map((r) => ({ ...r, quantity: num(r.quantity), price: num(r.price), value: num(r.value), cost_basis: num(r.cost_basis), updated_at: new Date(r.updated_at).toISOString() }));
   }
 
   async listRules() {
@@ -444,6 +490,7 @@ class FileStore {
     for (const [k, v] of Object.entries(this.data.accounts)) if (v.item_id === itemId) {
       delete this.data.accounts[k]; delete this.data.nicknames?.[k]; delete this.data.manual?.[k];
       this.data.snapshots = (this.data.snapshots || []).filter((x) => x.account_id !== k);
+      this.data.holdings = (this.data.holdings || []).filter((x) => x.account_id !== k);
     }
     for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) { delete this.data.transactions[k]; delete this.data.overrides?.[k]; }
     this.save();
@@ -499,6 +546,16 @@ class FileStore {
 
   async listSnapshots() {
     return [...(this.data.snapshots || [])].sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  async replaceHoldings(itemId, rows) {
+    const now = new Date().toISOString();
+    this.data.holdings = (this.data.holdings || []).filter((h) => h.item_id !== itemId).concat(rows.map((h) => ({ ...h, item_id: itemId, updated_at: now })));
+    this.save();
+  }
+
+  async listHoldings() {
+    return [...(this.data.holdings || [])].sort((a, b) => (b.value || 0) - (a.value || 0));
   }
 
   async listRules() {

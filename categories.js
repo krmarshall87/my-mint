@@ -161,8 +161,28 @@ const PRIMARY_MAP = {
   OTHER: UNCATEGORIZED,
 };
 
+// Investment activity (from /investments/transactions/get) is stored with
+// primary INVESTMENT and detailed INVESTMENT_<type>_<subtype>.
+function fromInvestment(detailed) {
+  const [, type = '', ...rest] = detailed.toLowerCase().split('_');
+  const subtype = rest.join(' ');
+  if (type === 'buy') return 'Buy';
+  if (type === 'sell') return 'Sell';
+  if (type === 'fee') return subtype.includes('account') ? 'Service Fee' : 'Trade Commissions';
+  if (type === 'transfer') return 'Transfer';
+  if (type === 'cash') {
+    if (/dividend|capital gain/.test(subtype)) return 'Dividend & Cap Gains';
+    if (subtype.includes('interest')) return 'Interest Income';
+    if (/contribution|deposit/.test(subtype)) return 'Deposit';
+    if (/withdrawal|distribution/.test(subtype)) return 'Withdrawal';
+    if (subtype.includes('fee') || subtype.includes('tax')) return 'Service Fee';
+  }
+  return 'Investments';
+}
+
 // Plaid category (primary + detailed) → our category name.
 function fromPlaid(primary, detailed) {
+  if (primary === 'INVESTMENT') return fromInvestment(detailed || '');
   if (detailed && DETAILED_MAP[detailed]) return DETAILED_MAP[detailed];
   if (primary && PRIMARY_MAP[primary]) return PRIMARY_MAP[primary];
   return UNCATEGORIZED;
