@@ -26,6 +26,7 @@
     <nav class="tabs" aria-label="Sections">
       <a href="#overview" data-view="overview">Overview</a>
       <a href="#transactions" data-view="transactions">Transactions</a>
+      <a href="#bills" data-view="bills">Bills</a>
       <a href="#budgets" data-view="budgets">Budgets</a>
       <a href="#trends" data-view="trends">Trends</a>
       <a href="#rules" data-view="rules">Rules</a>
@@ -93,6 +94,11 @@
         </div>
 
         <div class="panel">
+          <div class="panel-head"><h2>Upcoming bills <span class="muted">· next 30 days</span></h2><a href="#bills" class="link-btn">All bills →</a></div>
+          <div id="ov-upcoming" class="bill-list"></div>
+        </div>
+
+        <div class="panel">
           <div class="panel-head"><h2>Budget <span id="ov-budget-month" class="muted"></span></h2><a href="#budgets" class="link-btn">See all budgets →</a></div>
           <div id="ov-budget" class="ov-budget"></div>
         </div>
@@ -138,6 +144,29 @@
             <button id="prev-btn" class="btn">← Newer</button>
             <span id="page-info" class="muted"></span>
             <button id="next-btn" class="btn">Older →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- --------------------------------------------------------- Bills -->
+      <section id="view-bills" class="view" hidden>
+        <div>
+          <h1>Bills</h1>
+          <p class="muted">Found automatically from your history: anything you pay on a regular schedule. Amounts marked “about” vary from bill to bill. Credit card payments are listed but not added to the total, since the purchases already count.</p>
+        </div>
+        <div class="summary">
+          <div><span>Bills per month</span><strong id="bills-monthly">$0</strong></div>
+          <div><span>Due next 30 days</span><strong id="bills-upcoming">$0</strong></div>
+          <div><span>Recurring bills</span><strong id="bills-count">0</strong></div>
+          <div><span>Subscriptions under $30</span><strong id="bills-subs">0</strong></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>Recurring bills</h2><span class="muted hint">Sorted by next due date</span></div>
+          <div class="table-wrap">
+            <table class="tx-table bills-table">
+              <thead><tr><th>Next due</th><th>Bill</th><th>How often</th><th class="num">Amount</th><th class="num">Per month</th><th>Last paid</th><th>Account</th></tr></thead>
+              <tbody id="bills-body"></tbody>
+            </table>
           </div>
         </div>
       </section>

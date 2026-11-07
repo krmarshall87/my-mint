@@ -67,7 +67,7 @@ const items = {
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json());
+app.use(express.json({ limit: '5mb' })); // CSV imports can be thousands of rows
 
 // ------------------------------------------------------------------- auth --
 // HTTP Basic Auth (any username, password = APP_PASSWORD). Render serves over HTTPS.
@@ -977,12 +977,150 @@ app.get('/api/net-worth', async (_req, res) => {
   res.json({ months: out, first_snapshot: snapshots[0]?.date ?? null });
 });
 
+// ------------------------------------------------------- recurring bills --
+// Detected from your own history (works for manual accounts too): for each
+// merchant, look for a regular rhythm. A merchant that bills two different
+// things on different days (e.g. $267 and $23.50 every month) is split by
+// amount and each is checked on its own.
+const FREQUENCIES = [
+  { key: 'weekly', label: 'Weekly', days: 7, tol: 2 },
+  { key: 'biweekly', label: 'Every 2 weeks', days: 14, tol: 3 },
+  { key: 'monthly', label: 'Monthly', days: 30.44, tol: 5 },
+  { key: 'quarterly', label: 'Quarterly', days: 91.3, tol: 12 },
+  { key: 'yearly', label: 'Yearly', days: 365.25, tol: 20 },
+];
+const SKIP_RECURRING = new Set(['Transfer for Cash Requirement', 'Loan Payment Received', 'Hide from Budgets & Trends', 'Transfer']);
+const dayNum = (d) => Math.round(Date.parse(`${d}T00:00:00Z`) / 86400000);
+const fromDayNum = (n) => new Date(n * 86400000).toISOString().slice(0, 10);
+const median = (xs) => { const a = [...xs].sort((x, y) => x - y); const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+
+function addPeriod(date, f, n = 1) {
+  if (f.key === 'monthly' || f.key === 'quarterly' || f.key === 'yearly') {
+    const months = (f.key === 'monthly' ? 1 : f.key === 'quarterly' ? 3 : 12) * n;
+    const [y, m, d] = date.split('-').map(Number);
+    const target = new Date(Date.UTC(y, m - 1 + months, 1));
+    const last = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+    target.setUTCDate(Math.min(d, last));
+    return target.toISOString().slice(0, 10);
+  }
+  return fromDayNum(dayNum(date) + f.days * n);
+}
+
+// Places where two visits a year apart are a coincidence, not a bill.
+const NOT_YEARLY = new Set(['Food & Dining', 'Travel', 'Shopping', 'Gifts & Donations', 'Entertainment', 'Personal Care']);
+
+// Is this list of transactions (oldest first) a regular series?
+function cadence(txns) {
+  if (txns.length < 2) return null;
+  const gaps = txns.slice(1).map((t, i) => dayNum(t.date) - dayNum(txns[i].date)).filter((g) => g > 0);
+  if (!gaps.length) return null;
+  const g = median(gaps);
+  const f = FREQUENCIES.find((x) => Math.abs(g - x.days) <= x.tol);
+  if (!f) return null;
+  if (f.key !== 'yearly' && txns.length < 3) return null;
+  if (f.key === 'yearly' && txns.length < 3) {
+    // Two charges a year apart only count as a yearly bill when the amount
+    // repeats (a renewal) and it isn't somewhere you'd just happen to go twice.
+    const [a, b] = txns.map((t) => t.amount);
+    if (Math.abs(a - b) > Math.max(0.5, 0.02 * a) || a < 5 || NOT_YEARLY.has(txns[0].parent)) return null;
+  }
+  const regular = gaps.filter((x) => Math.abs(x - f.days) <= f.tol).length / gaps.length;
+  return regular >= 0.7 ? f : null;
+}
+
+// Split amounts into clusters of similar size (within 15% of the cluster's first amount).
+function amountClusters(txns) {
+  const sorted = [...txns].sort((a, b) => a.amount - b.amount);
+  const clusters = [];
+  for (const t of sorted) {
+    const c = clusters[clusters.length - 1];
+    if (c && t.amount <= c[0].amount * 1.15 + 1) c.push(t); else clusters.push([t]);
+  }
+  return clusters.map((c) => c.sort((a, b) => a.date.localeCompare(b.date)));
+}
+
+async function detectRecurring() {
+  const rows = await categorizedTransactions();
+  const accounts = new Map((await listAccounts()).map((a) => [a.account_id, a]));
+  const today = isoDate(new Date());
+  // Money back by account, to spot charges the bank reverses every time
+  // (a monthly fee that's always waived costs nothing).
+  const credits = new Map();
+  for (const t of rows) if (t.amount < 0) { const l = credits.get(t.account_id) || []; l.push(t); credits.set(t.account_id, l); }
+  const reversed = (t) => (credits.get(t.account_id) || []).some((c) => Math.abs(c.amount + t.amount) < 0.01 && Math.abs(dayNum(c.date) - dayNum(t.date)) <= 3);
+  const groups = new Map();
+  for (const t of rows) {
+    if (t.amount <= 0 || t.pending || SKIP_RECURRING.has(t.category)) continue;
+    const key = (t.display_name || merchantKey(t) || t.name).toLowerCase();
+    // Checks to different people all look alike; only a rule's name tells them apart.
+    if (!key || (!t.display_name && /^check\b/.test(key))) continue;
+    const l = groups.get(key) || [];
+    l.push(t);
+    groups.set(key, l);
+  }
+  const bills = [];
+  for (const [key, all] of groups) {
+    const series = all.sort((a, b) => a.date.localeCompare(b.date));
+    // Whole merchant first (variable bills like electricity), then by amount.
+    let found = cadence(series) ? [series] : amountClusters(series).filter((c) => cadence(c));
+    for (const txns of found) {
+      const f = cadence(txns);
+      const last = txns[txns.length - 1];
+      if (txns.filter(reversed).length >= txns.length * 0.7) continue;
+      // Stopped if it's well past when the next one should have come.
+      if (dayNum(today) - dayNum(last.date) > f.days * 1.5 + f.tol) continue;
+      const recent = txns.slice(-3).map((t) => t.amount);
+      const typical = median(recent);
+      const spread = (Math.max(...recent) - Math.min(...recent)) / (typical || 1);
+      let next = addPeriod(last.date, f);
+      const a = accounts.get(last.account_id);
+      bills.push({
+        id: crypto.createHash('sha1').update(`${key}|${f.key}|${Math.round(typical)}`).digest('hex').slice(0, 12),
+        name: last.display_name || last.merchant_name || last.name,
+        category: last.category,
+        parent: last.parent,
+        card_payment: last.category === 'Credit Card Payment',
+        frequency: f.key,
+        frequency_label: f.label,
+        amount: round2(typical),
+        variable: spread > 0.15,
+        monthly: round2((typical * 30.44) / f.days),
+        last_date: last.date,
+        next_date: next,
+        overdue: next < today,
+        occurrences: txns.length,
+        account: a ? acctNameOf(a) : null,
+        history: txns.slice(-6).map((t) => ({ date: t.date, amount: t.amount })),
+      });
+    }
+  }
+  bills.sort((a, b) => a.next_date.localeCompare(b.next_date));
+  return bills;
+}
+
+app.get('/api/recurring', async (req, res) => {
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 30, 1), 120);
+  const bills = await detectRecurring();
+  const horizon = daysAgo(-days);
+  const upcoming = bills.filter((b) => b.next_date <= horizon);
+  const counted = bills.filter((b) => !b.card_payment);
+  res.json({
+    bills,
+    upcoming,
+    days,
+    monthly_total: round2(counted.reduce((s, b) => s + b.monthly, 0)),
+    upcoming_total: round2(upcoming.filter((b) => !b.card_payment).reduce((s, b) => s + b.amount, 0)),
+  });
+});
+
 // ---------------------------------------------------------------- alerts --
 // Computed from the data on each request, so there's nothing to keep in sync.
 const pretty = (c) => (c === 'OTHER' ? 'Other' : c || UNCATEGORIZED);
 const usd = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
 const LARGE_PURCHASE = () => Number(process.env.ALERT_LARGE_AMOUNT || 500);
 const MAX_ALERTS = 12;
+// Large payments that aren't purchases: bills show up under Upcoming bills instead.
+const EXPECTED_PAYMENTS = new Set(['Bills & Utilities', 'Taxes', 'Financial']);
 const acctNameOf = (a) => `${a.display_name}${a.mask ? ` ••${a.mask}` : ''}`;
 
 app.get('/api/alerts', async (_req, res) => {
@@ -1020,6 +1158,11 @@ app.get('/api/alerts', async (_req, res) => {
     }
   }
 
+  // Bills due in the next 3 days.
+  for (const bill of (await detectRecurring()).filter((x) => !x.overdue && x.next_date <= daysAgo(-3))) {
+    add(`bill:${bill.id}:${bill.next_date}`, 'info', today, b(bill.name), ` (${bill.variable ? 'about ' : ''}${usd(bill.amount)}) is due around ${new Date(`${bill.next_date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}.`);
+  }
+
   // Manual accounts that haven't had a CSV import in a while.
   for (const a of (await listAccounts()).filter((x) => x.manual && x.stale)) {
     const when = a.last_imported_at ? `hasn't been updated in ${a.days_since_import} days` : 'has never been imported';
@@ -1035,7 +1178,7 @@ app.get('/api/alerts', async (_req, res) => {
     if (t.excluded) continue;
     if (isIncome(t.category) && t.amount < 0) {
       add(`income:${t.transaction_id}`, 'good', t.date, 'You received ', b(usd(-t.amount)), ' from ', b(merchantOf(t)), ' in ', b(acctName(t.account_id)), '.');
-    } else if (t.amount >= LARGE_PURCHASE()) {
+    } else if (t.amount >= LARGE_PURCHASE() && !EXPECTED_PAYMENTS.has(t.parent)) {
       add(`large:${t.transaction_id}`, 'info', t.date, 'Your ', b(usd(t.amount)), ' purchase from ', b(merchantOf(t)), t.pending ? ' is pending on ' : ' has cleared on ', b(acctName(t.account_id)), '.');
     }
   }

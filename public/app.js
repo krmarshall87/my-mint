@@ -381,13 +381,15 @@ const cache = {};
 async function loadOverview() {
   const start = periodRange('last-12')[0];
   await withLoading($('#view-overview'), async () => {
-    const [alerts, summary, insights, recent, pace] = await Promise.all([
+    const [alerts, summary, insights, recent, pace, recurring] = await Promise.all([
       api('/api/alerts'),
       api(`/api/budget-summary?month=${thisMonth()}`),
       api(`/api/insights?start=${start}`),
       api('/api/transactions?limit=8'),
       api('/api/spending-pace'),
+      api('/api/recurring?days=30'),
     ]);
+    renderUpcoming(recurring);
     cache.overview = { insights, pace };
     renderAlerts(alerts);
     renderPace(pace);
@@ -397,6 +399,67 @@ async function loadOverview() {
     $('#ov-recent').innerHTML = recent.transactions.length
       ? recent.transactions.map((t) => txRow(t, acctById)).join('')
       : `<tr><td class="empty">${state.items.length ? 'No transactions yet.' : 'Link an account to see transactions.'}</td></tr>`;
+  });
+}
+
+// ---------------------------------------------------------------- Bills --
+const billAmount = (b) => `${b.variable ? 'about ' : ''}${money(b.amount)}`;
+const dueLabel = (b) => {
+  const days = Math.round((Date.parse(`${b.next_date}T00:00:00Z`) - Date.parse(`${iso(new Date())}T00:00:00Z`)) / 86400000);
+  if (b.overdue) return { text: `expected ${shortDate(b.next_date)}`, cls: 'late' };
+  if (days === 0) return { text: 'today', cls: 'soon' };
+  if (days === 1) return { text: 'tomorrow', cls: 'soon' };
+  return { text: days > 60 ? `in about ${Math.round(days / 30.4)} months` : `in ${days} days`, cls: days <= 7 ? 'soon' : '' };
+};
+
+function renderUpcoming(r) {
+  const box = $('#ov-upcoming');
+  box.replaceChildren();
+  if (!r.upcoming.length) {
+    box.appendChild(el('p', { class: 'empty-note' }, state.items.length ? 'No bills expected in the next 30 days.' : 'Link an account and bills will show up here.'));
+    return;
+  }
+  box.appendChild(el('p', { class: 'bill-total' }, `${money(r.upcoming_total)} due in the next 30 days${r.upcoming.some((b) => b.card_payment) ? ', plus card payments' : ''}`));
+  const ul = el('ul');
+  for (const b of r.upcoming) {
+    const due = dueLabel(b);
+    const li = el('li', { class: 'bill-row' });
+    li.append(
+      el('span', { class: `bill-date ${due.cls}` }, shortDate(b.next_date)),
+      (() => { const n = el('span', { class: 'bill-name' }, b.name); n.appendChild(el('small', {}, `${b.category}${b.card_payment ? ' · not counted' : ''} · ${due.text}`)); return n; })(),
+      el('span', { class: 'num' }, billAmount(b)),
+    );
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
+}
+
+async function loadBills() {
+  await withLoading($('#view-bills'), async () => {
+    const r = await api('/api/recurring?days=30');
+    $('#bills-monthly').textContent = money(r.monthly_total);
+    $('#bills-upcoming').textContent = money(r.upcoming_total);
+    const counted = r.bills.filter((b) => !b.card_payment);
+    $('#bills-count').textContent = String(counted.length);
+    $('#bills-subs').textContent = String(counted.filter((b) => b.amount < 30 && b.frequency === 'monthly').length);
+    const body = $('#bills-body');
+    body.replaceChildren();
+    if (!r.bills.length) {
+      const tr = el('tr');
+      tr.appendChild(el('td', { colspan: '7', class: 'empty' }, 'No recurring bills found yet. They appear once a payment has repeated a few times.'));
+      body.appendChild(tr);
+      return;
+    }
+    for (const b of r.bills) {
+      const due = dueLabel(b);
+      const tr = el('tr', { class: b.card_payment ? 'card-payment' : '' });
+      const when = el('td', { class: 'date' }, shortDate(b.next_date));
+      when.appendChild(el('small', { class: `due ${due.cls}` }, due.text));
+      const name = el('td', { class: 'desc' }, b.name);
+      name.appendChild(el('div', { class: 'sub' }, `${b.category}${b.card_payment ? ' · not counted in totals' : ''} · paid ${b.occurrences}×`));
+      tr.append(when, name, el('td', {}, b.frequency_label), el('td', { class: 'num' }, billAmount(b)), el('td', { class: 'num muted' }, b.card_payment ? '—' : money(b.monthly)), el('td', { class: 'date' }, shortDate(b.last_date)), el('td', {}, b.account || ''));
+      body.appendChild(tr);
+    }
   });
 }
 
@@ -1292,7 +1355,7 @@ $('#csv-form').addEventListener('submit', async (e) => {
 });
 
 // ----------------------------------------------------------------- Router --
-const VIEWS = { overview: loadOverview, transactions: loadTransactions, budgets: loadBudgets, trends: loadTrends, rules: loadRulesView };
+const VIEWS = { overview: loadOverview, transactions: loadTransactions, bills: loadBills, budgets: loadBudgets, trends: loadTrends, rules: loadRulesView };
 
 function route() {
   const view = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : 'overview';
