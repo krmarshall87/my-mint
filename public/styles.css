@@ -298,12 +298,6 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .dialog-actions { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .dialog-actions .spacer { flex: 1; }
 
-.rules-panel > summary { cursor: pointer; list-style: none; }
-.rules-panel > summary::-webkit-details-marker { display: none; }
-.rules-panel:not([open]) > summary { border-bottom: 0; }
-.rules { list-style: none; margin: 0; padding: 0 0 6px; }
-.rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 8px 14px; border-top: 1px solid var(--border); font-size: 13px; }
-.rule-row strong { overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------- Rules -- */
 .head-links { display: flex; gap: 14px; align-items: center; }
@@ -422,9 +416,6 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .buffer-line { stroke: var(--warning); stroke-width: 1.5; stroke-dasharray: 5 4; }
 
 /* --------------------------------------------------------- Credit cards -- */
-.summary-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-@media (max-width: 1100px) { .summary-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 600px) { .summary-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .plan-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 14px; }
 .buffer-field { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; }
 .money-input { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; background: var(--bg); }
