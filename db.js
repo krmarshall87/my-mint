@@ -413,14 +413,6 @@ class PgStore {
     return rows;
   }
 
-  async setRule(pattern, category) {
-    await this.pool.query(
-      `INSERT INTO category_rules (pattern, category) VALUES ($1, $2)
-       ON CONFLICT (pattern) DO UPDATE SET category = EXCLUDED.category`,
-      [pattern, category],
-    );
-  }
-
   async deleteRule(pattern) {
     await this.pool.query('DELETE FROM category_rules WHERE pattern = $1', [pattern]);
   }
@@ -469,13 +461,6 @@ class PgStore {
 
   async deleteBudget(category) {
     await this.pool.query('DELETE FROM budgets WHERE category = $1', [category]);
-  }
-
-  async listCategories() {
-    const { rows } = await this.pool.query(
-      'SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL ORDER BY 1',
-    );
-    return rows.map((r) => r.category);
   }
 
   async listTransactions(f) {
@@ -661,11 +646,6 @@ class FileStore {
       .sort((a, b) => a.pattern.localeCompare(b.pattern));
   }
 
-  async setRule(pattern, category) {
-    (this.data.rules ||= {})[pattern] = category;
-    this.save();
-  }
-
   async deleteRule(pattern) {
     if (this.data.rules) delete this.data.rules[pattern];
     this.save();
@@ -703,10 +683,6 @@ class FileStore {
   async deleteBudget(category) {
     if (this.data.budgets) delete this.data.budgets[category];
     this.save();
-  }
-
-  async listCategories() {
-    return [...new Set(Object.values(this.data.transactions).map((t) => t.category).filter(Boolean))].sort();
   }
 
   async listTransactions(f) {

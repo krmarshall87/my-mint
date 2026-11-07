@@ -1369,7 +1369,6 @@ const CARD_STATUS = {
   PRODUCT_NOT_READY: 'is still preparing card statements. They’ll appear after the next update.',
   NO_LIABILITY_ACCOUNTS: 'didn’t report any card statements.',
 };
-let cardPlanData = null;
 const cardBuffer = () => {
   const v = Number(prefs.get('cardBuffer', 500));
   return Number.isFinite(v) && v >= 0 ? v : 500;
@@ -1392,7 +1391,6 @@ async function loadCards() {
   if (document.activeElement !== input) input.value = String(cardBuffer());
   await withLoading($('#view-cards'), async () => {
     const d = await api(`/api/card-plan?buffer=${encodeURIComponent(cardBuffer())}`);
-    cardPlanData = d;
     const t = d.totals;
     $('#card-window').textContent = `Planning through ${shortDate(d.end)}; bills and paychecks are looked at through ${shortDate(d.through)} so next month’s bills stay covered.`;
 
@@ -1681,11 +1679,9 @@ function amortize({ balance, rate, payment, start, extra = 0, extraFrom = start,
   return { rows, interest: r2(interestTotal), months: rows.length, payoff: rows.length ? rows[rows.length - 1].month : start, never: bal > 0.005, payment: pay };
 }
 
-let loansData = null;
 async function loadLoans() {
   await withLoading($('#view-loans'), async () => {
     const d = await api('/api/loans');
-    loansData = d;
     $('#loan-status').replaceChildren(...consentNotes(d.status, 'loan details', LOAN_STATUS));
     const list = $('#loans-list');
     list.replaceChildren();

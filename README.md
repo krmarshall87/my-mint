@@ -2,7 +2,7 @@
 
 A small personal finance app that links your bank accounts through [Plaid](https://plaid.com), in the spirit of the old Mint:
 
-- **Overview:** accounts grouped into cash, credit cards, loans and investments, with balances and net worth. Alerts for budget overages, unusual spending, large purchases and income. This month's budgets as progress bars, a 12-month cash-flow chart, and recent transactions.
+- **Overview:** accounts grouped into cash, credit cards, loans and investments, with balances and net worth. Alerts for budget overages, unusual spending, large purchases, income, bills due soon, banks that need attention or whose connection expires soon, and manual accounts that need an import. This month's budgets as progress bars, current spend against last month, upcoming bills, net income for the last 12 months, and recent transactions.
 - **Transactions:** search and filter by account, category and period; export to CSV. Click a category to fix it for one transaction, or save it as a rule.
 - **Categories:** Mint's category tree (Auto & Transport › Gas & Fuel, Food & Dining › Groceries, …). Plaid's detailed categories are mapped onto it, so a supermarket lands in Groceries and a café in Coffee Shops. When Plaid has no category, the app uses what that merchant usually is in your history, then a few built-in defaults; guesses are shown in italics.
 - **Current spend:** this month's spending so far, day by day, against last month, and how far ahead or behind you are at this point in the month (Overview).
@@ -63,7 +63,6 @@ Many large US banks link through OAuth, which redirects back to your app. To sup
 - **Database:** the app uses CockroachDB Cloud, which is hosted outside Render. If the database is unreachable at startup, the app still starts, returns 503 from the API, and retries the connection in the background.
 - **Security:** never commit `.env` or the `DATABASE_URL` password. If your CockroachDB cluster restricts IPs, allow Render's outbound IPs (Render dashboard → your service → **Connect → Outbound**).
 - **Sandbox → production:** when you switch `PLAID_ENV`, remove the sandbox institutions in the UI first. Their tokens don't work in production.
-- **Money in/out totals** include transfers between your own accounts and credit-card payments. Filter by category to exclude them.
 
 ## API
 
@@ -83,7 +82,7 @@ All routes need Basic Auth.
 | DELETE | `/api/budgets/:category` | Remove a budget |
 | GET | `/api/budget-summary?month=YYYY-MM` | Income, spending per budgeted category, and left over for one month |
 | GET | `/api/alerts` | Current alerts, computed from your data (broken connections, budgets, unusual spending, large purchases ≥ `ALERT_LARGE_AMOUNT`, income) |
-| PUT | `/api/transactions/:id/category` | `{ "category": "TRAVEL" }` fixes one transaction (`null` resets it); add `"pattern": "amazon"` to make it a rule |
+| PUT | `/api/transactions/:id/category` | `{ "category": "Travel" }` fixes one transaction (`null` resets it); add `"pattern": "amazon"` to make it a rule |
 | GET / POST | `/api/rules` | List rules (in order, with how many transactions each applies to), or create one: `{ match_type: "contains"\|"starts"\|"equals", pattern, account_id?, amount_min?, amount_max?, rename_to?, category?, apply_past }` |
 | PUT / DELETE | `/api/rules/:id` | Update or delete a rule |
 | POST | `/api/rules/order` | `{ "ids": [...] }` sets the order, top first |
