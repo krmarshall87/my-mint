@@ -192,7 +192,7 @@ function renderAccounts() {
           <span>${esc(i.institution_name)}${i.manual ? ' <small class="muted">(manual)</small>' : ''}</span>
           ${i.error ? `<button class="link-btn" data-relink="${esc(i.item_id)}">reconnect</button>` : ''}
           <button class="link-btn danger" data-remove="${esc(i.item_id)}">remove</button>
-        </div>${i.error ? `<div class="inst-error">${esc(ERROR_TEXT[i.error] || i.error)}</div>` : ''}`).join('')}
+        </div>${i.error ? `<div class="inst-error">${esc(i.error_text || ERROR_TEXT[i.error] || i.error)}</div>` : ''}`).join('')}
     </section>` : '');
 
   const net = state.accounts.reduce((s, a) => s + signedBalance(a), 0);

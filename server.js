@@ -285,7 +285,11 @@ app.post('/api/sync', async (_req, res) => {
 });
 
 app.get('/api/items', async (_req, res) => {
-  res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => ({ ...rest, manual: isManualItem(rest) })));
+  res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => ({
+    ...rest,
+    manual: isManualItem(rest),
+    ...(rest.error === CONSENT_NEEDED ? { error_text: `One-time OK needed to share ${consentLabel(rest.item_id)}. Click reconnect.` } : {}),
+  })));
 });
 
 app.delete('/api/items/:id', async (req, res) => {
