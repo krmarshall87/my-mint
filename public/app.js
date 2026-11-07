@@ -381,20 +381,97 @@ const cache = {};
 async function loadOverview() {
   const start = periodRange('last-12')[0];
   await withLoading($('#view-overview'), async () => {
-    const [alerts, summary, insights, recent] = await Promise.all([
+    const [alerts, summary, insights, recent, pace] = await Promise.all([
       api('/api/alerts'),
       api(`/api/budget-summary?month=${thisMonth()}`),
       api(`/api/insights?start=${start}`),
       api('/api/transactions?limit=8'),
+      api('/api/spending-pace'),
     ]);
-    cache.overview = { insights };
+    cache.overview = { insights, pace };
     renderAlerts(alerts);
+    renderPace(pace);
     renderOverviewBudget(summary);
     renderCashflow($('#ov-cashflow'), $('#ov-cashflow-table'), insights.months);
     const acctById = Object.fromEntries(state.accounts.map((a) => [a.account_id, a]));
     $('#ov-recent').innerHTML = recent.transactions.length
       ? recent.transactions.map((t) => txRow(t, acctById)).join('')
       : `<tr><td class="empty">${state.items.length ? 'No transactions yet.' : 'Link an account to see transactions.'}</td></tr>`;
+  });
+}
+
+// This month's spending so far vs. last month at the same point.
+function renderPace(p) {
+  $('#pace-total').textContent = wholeMoney(p.total);
+  const delta = $('#pace-delta');
+  delta.replaceChildren();
+  const thisName = MONTH_FMT.format(monthDate(p.month)), lastName = MONTH_FMT.format(monthDate(p.previous_month));
+  if (p.previous.length) {
+    const d = p.delta;
+    const icon = el('span', { class: `delta-icon ${d > 0 ? 'up' : 'down'}`, 'aria-hidden': 'true' }, d > 0 ? '↑' : '↓');
+    const msg = Math.abs(d) < 1 ? `About the same as ${lastName} at this point`
+      : d > 0 ? `You’ve spent ${wholeMoney(d)} more than ${lastName} at this point` : `You’ve spent ${wholeMoney(-d)} less than ${lastName} at this point`;
+    delta.append(icon, document.createTextNode(` ${msg}. ${lastName} total: ${wholeMoney(p.previous_total)}.`));
+  }
+  Charts.pace($('#ov-pace'), { current: p.current, previous: p.previous, days: p.days, format: wholeMoney, currentLabel: thisName, previousLabel: lastName, color: 'var(--series-1)' });
+  Charts.table($('#ov-pace-table'), {
+    rows: Array.from({ length: Math.max(p.days, p.previous_days) }, (_, i) => ({ day: i + 1, cur: p.current[i], prev: p.previous[i] })),
+    columns: [
+      { label: 'Day', get: (r) => String(r.day) },
+      { label: thisName, num: true, get: (r) => (r.cur == null ? '' : money(r.cur)) },
+      { label: lastName, num: true, get: (r) => (r.prev == null ? '' : money(r.prev)) },
+    ],
+  });
+}
+
+// Income above zero, spending below, net income as a line.
+function renderNetIncome(months) {
+  const rows = monthRows(months).map((m) => ({ ...m, up: Math.max(0, m.income), down: Math.max(0, m.spending), line: m.income - m.spending }));
+  Charts.diverging($('#chart-net-income'), {
+    rows, format: money,
+    up: { label: 'Income', color: 'var(--series-1)' },
+    down: { label: 'Spending', color: 'var(--series-2)' },
+    line: { label: 'Net income', color: 'var(--text)' },
+  });
+  const best = rows.reduce((b, r) => (b && b.line >= r.line ? b : r), null);
+  $('#net-income-best').textContent = best ? `Best month: ${signedMoney(best.line)} in ${best.sub}.` : '';
+  Charts.table($('#table-net-income'), {
+    rows,
+    columns: [
+      { label: 'Month', get: (r) => r.sub },
+      { label: 'Income', num: true, get: (r) => money(r.income) },
+      { label: 'Spending', num: true, get: (r) => money(r.spending) },
+      { label: 'Net', num: true, get: (r) => money(r.line) },
+    ],
+  });
+}
+
+// Assets above zero, debts below, net worth as a line.
+function renderNetWorth(nw) {
+  const rows = nw.months.map((m) => ({
+    label: MONTH_FMT.format(monthDate(m.month)), year: `’${m.month.slice(2, 4)}`, sub: MONTH_LONG.format(monthDate(m.month)),
+    // Bars only draw positive values; tooltips and the table show the real numbers.
+    up: m.assets, down: m.debts, line: m.net, estimated: m.estimated,
+  }));
+  Charts.diverging($('#chart-net-worth'), {
+    rows, format: money,
+    up: { label: 'Assets', color: 'var(--series-1)' },
+    down: { label: 'Debts', color: 'var(--series-2)' },
+    line: { label: 'Net worth', color: 'var(--text)' },
+  });
+  const est = nw.months.filter((m) => m.estimated).length;
+  const since = nw.first_snapshot ? LONG_DATE.format(new Date(`${nw.first_snapshot}T00:00:00Z`)) : 'today';
+  $('#net-worth-note').textContent = est
+    ? `Lighter months are estimates: before ${since}, cash and card balances are worked back from your transactions, and loan and investment balances are held at their earliest recorded value (interest and market changes aren’t transactions). Balances are saved daily from now on, so new months are exact.`
+    : '';
+  Charts.table($('#table-net-worth'), {
+    rows,
+    columns: [
+      { label: 'Month', get: (r) => `${r.sub}${r.estimated ? ' (estimate)' : ''}` },
+      { label: 'Assets', num: true, get: (r) => money(r.up) },
+      { label: 'Debts', num: true, get: (r) => money(r.down) },
+      { label: 'Net worth', num: true, get: (r) => money(r.line) },
+    ],
   });
 }
 
@@ -667,6 +744,8 @@ function renderTrends(d) {
   });
 
   renderCashflow($('#chart-months'), $('#table-months'), d.months);
+  renderNetIncome(d.months);
+  if (cache.netWorth) renderNetWorth(cache.netWorth);
 
   Charts.bars($('#chart-merchants'), {
     color: 'var(--series-2)',
@@ -689,7 +768,7 @@ function renderTrends(d) {
 
 async function loadTrends() {
   await withLoading($('#view-trends'), async () => {
-    cache.trends = await api(`/api/insights?${currentQuery()}`);
+    [cache.trends, cache.netWorth] = await Promise.all([api(`/api/insights?${currentQuery()}`), api('/api/net-worth')]);
     renderTrends(cache.trends);
   });
 }
@@ -1236,7 +1315,10 @@ new ResizeObserver(([entry]) => {
   const w = Math.round(entry.contentRect.width);
   if (w === lastWidth) return;
   lastWidth = w;
-  if (state.view === 'overview' && cache.overview) renderCashflow($('#ov-cashflow'), $('#ov-cashflow-table'), cache.overview.insights.months);
+  if (state.view === 'overview' && cache.overview) {
+    renderCashflow($('#ov-cashflow'), $('#ov-cashflow-table'), cache.overview.insights.months);
+    renderPace(cache.overview.pace);
+  }
   if (state.view === 'trends' && cache.trends) renderTrends(cache.trends);
 }).observe($('.content'));
 

@@ -384,3 +384,21 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
   .field-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .dialog .field-row { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ------------------------------------------- Pace, net income, net worth -- */
+.pace-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; margin-bottom: 6px; }
+.hero { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+.pace-delta { margin: 0; font-size: 13px; color: var(--muted); max-width: 46ch; }
+.delta-icon { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid currentColor; font-size: 12px; font-weight: 800; vertical-align: -4px; }
+.delta-icon.up { color: var(--critical); }
+.delta-icon.down { color: var(--good); }
+.pace-area { fill-opacity: .14; stroke: none; }
+.pace-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.pace-dot { fill: var(--panel); stroke-width: 3; }
+.crosshair { stroke: var(--axis); stroke-width: 1; }
+.net-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.net-dot { stroke: var(--panel); stroke-width: 2; }
+.mark.estimated { opacity: .45; }
+.key-line { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
+.key-area { display: inline-block; width: 12px; height: 10px; border-radius: 2px; opacity: .25; }
+.note-line { font-size: 12px; margin: 8px 0 0; }
