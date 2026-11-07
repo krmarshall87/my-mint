@@ -251,6 +251,145 @@
     return bar;
   }
 
+  // Rounded data-end for a bar growing down from the baseline.
+  function columnPathDown(x, y, w, h) {
+    const r = Math.min(4, w / 2, h);
+    return `M${x},${y}V${y + h - r}Q${x},${y + h} ${x + r},${y + h}H${x + w - r}Q${x + w},${y + h} ${x + w},${y + h - r}V${y}Z`;
+  }
+
+  // Symmetric-ish clean ticks spanning min..max (min may be negative).
+  function niceRange(min, max, ticks = 4) {
+    const span = Math.max(Math.abs(min), Math.abs(max)) || 1;
+    const { step } = niceScale(span, Math.max(2, Math.round(ticks / (min < 0 && max > 0 ? 2 : 1))));
+    return { lo: Math.floor(min / step) * step, hi: Math.ceil(max / step) * step || step, step };
+  }
+
+  // ------------------------------------------------ diverging bars + line --
+  // rows: [{ label, year, sub, up, down, line, estimated }]. "up" grows above
+  // zero, "down" below it (pass a positive number), "line" is drawn on top.
+  // One axis: all three are dollars.
+  function diverging(container, { rows, up, down, line, format, height = 260 }) {
+    const card = container.closest('.chart-card');
+    const tip = tooltip(card);
+    container.replaceChildren();
+    if (!rows.length) {
+      container.appendChild(el('p', { class: 'chart-empty muted' }, 'No data yet.'));
+      return;
+    }
+    const width = Math.max(280, container.clientWidth);
+    const m = { top: 12, right: 10, bottom: 28, left: 58 };
+    const plotW = width - m.left - m.right, plotH = height - m.top - m.bottom;
+    const values = rows.flatMap((r) => [r.up, -r.down, r.line]);
+    const { lo, hi, step } = niceRange(Math.min(0, ...values), Math.max(0, ...values));
+    const yOf = (v) => m.top + ((hi - v) / (hi - lo)) * plotH;
+    const band = plotW / rows.length;
+    const colW = Math.max(3, Math.min(24, band * 0.6));
+    const svg = el('svg:svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': container.dataset.label || '' });
+    for (let v = lo; v <= hi + 1e-9; v += step) {
+      const y = Math.round(yOf(v)) + 0.5;
+      svg.appendChild(el('svg:line', { x1: m.left, x2: width - m.right, y1: y, y2: y, class: Math.abs(v) < 1e-9 ? 'axis-line' : 'grid-line' }));
+      svg.appendChild(el('svg:text', { x: m.left - 8, y: y + 4, 'text-anchor': 'end', class: 'tick' }, (v < 0 ? '−' : '') + compactMoney(Math.abs(v))));
+    }
+    const hover = el('svg:rect', { class: 'hover-band', y: m.top, height: plotH, width: band, visibility: 'hidden' });
+    svg.appendChild(hover);
+    const zero = yOf(0);
+    const every = Math.ceil(rows.length / Math.max(1, Math.floor(plotW / 48)));
+    let lastYear = null;
+    const pts = [];
+    rows.forEach((r, i) => {
+      const cx = m.left + band * i + band / 2;
+      const x = cx - colW / 2;
+      const cls = r.estimated ? 'mark estimated' : 'mark';
+      if (r.up > 0) svg.appendChild(el('svg:path', { d: columnPath(x, yOf(r.up), colW, zero - yOf(r.up)), style: `fill:${up.color}`, class: cls }));
+      // 2px surface gap between the up and down bars at the baseline.
+      if (r.down > 0) svg.appendChild(el('svg:path', { d: columnPathDown(x, zero + 1, colW, Math.max(0, yOf(-r.down) - zero - 1)), style: `fill:${down.color}`, class: cls }));
+      pts.push([cx, yOf(r.line)]);
+      if (i % every === 0) {
+        const text = r.year && r.year !== lastYear ? `${r.label} ${r.year}` : r.label;
+        lastYear = r.year;
+        svg.appendChild(el('svg:text', { x: cx, y: height - 8, 'text-anchor': 'middle', class: 'tick' }, text));
+      }
+    });
+    svg.appendChild(el('svg:path', { d: pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x},${y}`).join(''), class: 'net-line', style: `stroke:${line.color}` }));
+    pts.forEach(([x, y]) => svg.appendChild(el('svg:circle', { cx: x, cy: y, r: 4, class: 'net-dot', style: `fill:${line.color}` })));
+    rows.forEach((r, i) => {
+      const hit = el('svg:rect', { x: m.left + band * i, y: m.top, width: band, height: plotH, class: 'hit', tabindex: 0,
+        'aria-label': `${r.sub}: ${up.label} ${format(r.up)}, ${down.label} ${format(r.down)}, ${line.label} ${format(r.line)}` });
+      const show = (px, py) => {
+        hover.setAttribute('x', m.left + band * i);
+        hover.setAttribute('visibility', 'visible');
+        tip.show([
+          { color: line.color, value: format(r.line), label: line.label },
+          { color: up.color, value: format(r.up), label: up.label },
+          { color: down.color, value: format(r.down), label: down.label },
+          ...(r.estimated ? [{ value: '', label: 'Estimated' }] : []),
+        ], r.sub, px, py);
+      };
+      hit.addEventListener('pointermove', (e) => show(e.clientX, e.clientY));
+      hit.addEventListener('focus', () => show(...anchorOf(hit)));
+      const hide = () => { hover.setAttribute('visibility', 'hidden'); tip.hide(); };
+      hit.addEventListener('pointerleave', hide);
+      hit.addEventListener('blur', hide);
+      svg.appendChild(hit);
+    });
+    container.appendChild(svg);
+  }
+
+  // ---------------------------------------------------- spending pace -------
+  // Cumulative spending by day: last month as a light area, this month as a
+  // line ending in a dot. A crosshair snaps to the day under the pointer.
+  function pace(container, { current, previous, days, format, currentLabel, previousLabel, color, height = 200 }) {
+    const card = container.closest('.chart-card');
+    const tip = tooltip(card);
+    container.replaceChildren();
+    const width = Math.max(280, container.clientWidth);
+    const m = { top: 12, right: 12, bottom: 26, left: 54 };
+    const plotW = width - m.left - m.right, plotH = height - m.top - m.bottom;
+    const n = Math.max(days, previous.length);
+    const { max, step } = niceScale(Math.max(1, ...current, ...previous));
+    const xOf = (d) => m.left + ((d - 1) / Math.max(1, n - 1)) * plotW;
+    const yOf = (v) => m.top + plotH - (Math.max(0, v) / max) * plotH;
+    const svg = el('svg:svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': container.dataset.label || '' });
+    for (let v = 0; v <= max + 1e-9; v += step) {
+      const y = Math.round(yOf(v)) + 0.5;
+      svg.appendChild(el('svg:line', { x1: m.left, x2: width - m.right, y1: y, y2: y, class: v === 0 ? 'axis-line' : 'grid-line' }));
+      svg.appendChild(el('svg:text', { x: m.left - 8, y: y + 4, 'text-anchor': 'end', class: 'tick' }, compactMoney(v)));
+    }
+    const ord = (d) => `${d}${d % 10 === 1 && d !== 11 ? 'st' : d % 10 === 2 && d !== 12 ? 'nd' : d % 10 === 3 && d !== 13 ? 'rd' : 'th'}`;
+    for (const d of [1, 8, 15, 22, 29].filter((d) => d <= n)) svg.appendChild(el('svg:text', { x: xOf(d), y: height - 8, 'text-anchor': 'middle', class: 'tick' }, ord(d)));
+    if (previous.length) {
+      const top = previous.map((v, i) => `${xOf(i + 1)},${yOf(v)}`);
+      svg.appendChild(el('svg:path', { d: `M${xOf(1)},${yOf(0)}L${top.join('L')}L${xOf(previous.length)},${yOf(0)}Z`, class: 'pace-area', style: `fill:${color}` }));
+    }
+    if (current.length) {
+      svg.appendChild(el('svg:path', { d: current.map((v, i) => `${i ? 'L' : 'M'}${xOf(i + 1)},${yOf(v)}`).join(''), class: 'pace-line', style: `stroke:${color}` }));
+      const last = current.length;
+      svg.appendChild(el('svg:circle', { cx: xOf(last), cy: yOf(current[last - 1]), r: 5, class: 'pace-dot', style: `stroke:${color}` }));
+    }
+    const cross = el('svg:line', { y1: m.top, y2: m.top + plotH, class: 'crosshair', visibility: 'hidden' });
+    svg.appendChild(cross);
+    const hit = el('svg:rect', { x: m.left, y: m.top, width: plotW, height: plotH, class: 'hit', tabindex: 0, 'aria-label': container.dataset.label || '' });
+    const showDay = (d, px, py) => {
+      const x = xOf(d);
+      cross.setAttribute('x1', x); cross.setAttribute('x2', x); cross.setAttribute('visibility', 'visible');
+      tip.show([
+        ...(d <= current.length ? [{ color, value: format(current[d - 1]), label: currentLabel }] : []),
+        ...(d <= previous.length ? [{ color, value: format(previous[d - 1]), label: previousLabel }] : []),
+      ], `Day ${d}`, px, py);
+    };
+    hit.addEventListener('pointermove', (e) => {
+      const box = svg.getBoundingClientRect();
+      const d = Math.min(n, Math.max(1, Math.round(((e.clientX - box.left - m.left) / plotW) * (n - 1)) + 1));
+      showDay(d, e.clientX, e.clientY);
+    });
+    hit.addEventListener('focus', () => showDay(Math.max(1, current.length), ...anchorOf(hit)));
+    const hide = () => { cross.setAttribute('visibility', 'hidden'); tip.hide(); };
+    hit.addEventListener('pointerleave', hide);
+    hit.addEventListener('blur', hide);
+    svg.appendChild(hit);
+    container.appendChild(svg);
+  }
+
   // ------------------------------------------------------------ table view --
   // The accessible twin of every chart: same numbers, no hover needed.
   function table(container, { columns: cols, rows }) {
@@ -269,5 +408,5 @@
     container.appendChild(t);
   }
 
-  window.Charts = { columns, bars, donut, meter, table, el };
+  window.Charts = { columns, bars, donut, meter, table, el, diverging, pace };
 })();

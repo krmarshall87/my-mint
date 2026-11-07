@@ -199,6 +199,7 @@ function syncAll() {
         results.push({ item_id: item.item_id, error: plaidError(err) });
       }
     }
+    await recordSnapshots().catch((err) => console.error('snapshot failed', err.message));
     return results;
   })().finally(() => { syncInFlight = null; });
   return syncInFlight;
@@ -426,6 +427,7 @@ app.post('/api/manual-accounts/:id/import', async (req, res) => {
   await store.saveManualAccount({ account_id: a.account_id, item_id: a.item_id, login_url: a.login_url, column_map, last_imported_at: new Date().toISOString() });
   bumpData();
   const dates = txns.map((t) => t.date).sort();
+  await recordSnapshots().catch(() => {});
   res.json({ added, already: txns.length - added, total: txns.length, start: dates[0], end: dates[dates.length - 1] });
 });
 
@@ -879,6 +881,102 @@ app.get('/api/budget-summary', async (req, res) => {
   res.json(await budgetSummary(month));
 });
 
+// ------------------------------------------------- spending pace & worth --
+// This month's spending so far, day by day, against last month's.
+function spendingByDay(txns) {
+  const byDay = new Map();
+  for (const t of txns) {
+    if (t.excluded || isIncome(t.category)) continue;
+    const d = Number(t.date.slice(8, 10));
+    byDay.set(d, (byDay.get(d) || 0) + t.amount);
+  }
+  return byDay;
+}
+const cumulative = (byDay, days) => {
+  let run = 0;
+  return Array.from({ length: days }, (_, i) => round2((run += byDay.get(i + 1) || 0)));
+};
+const prevMonth = (m) => {
+  const [y, mo] = m.split('-').map(Number);
+  return mo === 1 ? `${y - 1}-12` : `${y}-${String(mo - 1).padStart(2, '0')}`;
+};
+
+app.get('/api/spending-pace', async (req, res) => {
+  const month = isMonth(req.query.month) ? req.query.month : isoDate(new Date()).slice(0, 7);
+  const prev = prevMonth(month);
+  const cur = monthBounds(month), last = monthBounds(prev);
+  const [curTx, lastTx] = await Promise.all([allTransactions({ start: cur.start, end: cur.end }), allTransactions({ start: last.start, end: last.end })]);
+  const curDays = Number(cur.end.slice(8, 10)), lastDays = Number(last.end.slice(8, 10));
+  const today = isoDate(new Date());
+  // Only plot this month up to today.
+  const shown = today < cur.start ? 0 : today > cur.end ? curDays : Number(today.slice(8, 10));
+  const current = cumulative(spendingByDay(curTx), curDays).slice(0, shown);
+  const previous = cumulative(spendingByDay(lastTx), lastDays);
+  const total = current.length ? current[current.length - 1] : 0;
+  const sameDay = previous[Math.min(shown, lastDays) - 1] ?? 0;
+  res.json({ month, previous_month: prev, days: curDays, previous_days: lastDays, current, previous, total, previous_same_day: sameDay, previous_total: previous[lastDays - 1] ?? 0, delta: round2(total - sameDay) });
+});
+
+// Record today's balance for every account (once a day is enough; later
+// syncs the same day overwrite it).
+async function recordSnapshots() {
+  const rows = (await store.listAccounts()).filter((a) => a.current_balance != null).map((a) => ({ account_id: a.account_id, balance: a.current_balance }));
+  if (rows.length) await store.saveSnapshots(isoDate(new Date()), rows);
+}
+
+const DEBT_TYPES = new Set(['credit', 'loan']);
+const monthEnd = (m) => monthBounds(m).end;
+
+// Month-end assets, debts and net worth. Real snapshots win where they exist.
+// Before that, cash and card balances are worked out backwards from their
+// transactions; loans and investments can't be (interest and market moves
+// aren't transactions), so they're held at their earliest known balance.
+// Either way those months are marked as estimates.
+app.get('/api/net-worth', async (_req, res) => {
+  const [accounts, snapshots, rows] = await Promise.all([store.listAccounts(), store.listSnapshots(), categorizedTransactions()]);
+  const thisMonth = isoDate(new Date()).slice(0, 7);
+  const firstTx = rows.length ? rows[rows.length - 1].date.slice(0, 7) : thisMonth;
+  const firstSnap = snapshots.length ? snapshots[0].date.slice(0, 7) : thisMonth;
+  const months = [];
+  for (let m = firstTx < firstSnap ? firstTx : firstSnap; m <= thisMonth; m = (() => { const [y, mo] = m.split('-').map(Number); return mo === 12 ? `${y + 1}-01` : `${y}-${String(mo + 1).padStart(2, '0')}`; })()) months.push(m);
+
+  const txByAccount = new Map();
+  for (const t of rows) { const l = txByAccount.get(t.account_id) || []; l.push(t); txByAccount.set(t.account_id, l); }
+  const snapsByAccount = new Map();
+  for (const s of snapshots) { const l = snapsByAccount.get(s.account_id) || []; l.push(s); snapsByAccount.set(s.account_id, l); }
+
+  const out = months.map((month) => ({ month, assets: 0, debts: 0, net: 0, estimated: false }));
+  for (const a of accounts) {
+    if (a.current_balance == null) continue;
+    const debt = DEBT_TYPES.has(a.type);
+    const snaps = snapsByAccount.get(a.account_id) || [];
+    const txns = txByAccount.get(a.account_id) || [];
+    const reconstructable = a.type === 'depository' || a.type === 'credit';
+    months.forEach((month, i) => {
+      const end = monthEnd(month);
+      let bal, estimated = false;
+      const snap = [...snaps].reverse().find((s) => s.date <= end);
+      if (month === thisMonth) bal = a.current_balance;
+      else if (snap && snap.date.slice(0, 7) === month) bal = snap.balance;
+      else if (reconstructable) {
+        // Undo everything after month end. Plaid: positive amount = money out,
+        // which lowers a cash balance and raises what you owe on a card.
+        const after = txns.filter((t) => t.date > end).reduce((s, t) => s + t.amount, 0);
+        bal = debt ? a.current_balance - after : a.current_balance + after;
+        estimated = true; // only as good as the transaction history behind it
+      } else {
+        bal = (snaps[0] && snaps[0].balance) ?? a.current_balance;
+        estimated = true;
+      }
+      const row = out[i];
+      if (debt) row.debts += bal; else row.assets += bal;
+      if (estimated) row.estimated = true;
+    });
+  }
+  for (const r of out) { r.assets = round2(r.assets); r.debts = round2(r.debts); r.net = round2(r.assets - r.debts); }
+  res.json({ months: out, first_snapshot: snapshots[0]?.date ?? null });
+});
+
 // ---------------------------------------------------------------- alerts --
 // Computed from the data on each request, so there's nothing to keep in sync.
 const pretty = (c) => (c === 'OTHER' ? 'Other' : c || UNCATEGORIZED);
@@ -994,6 +1092,7 @@ async function initDatabase() {
     try {
       await store.init();
       await migrateLegacyCategories();
+      await recordSnapshots().catch((err) => console.error('snapshot failed', err.message));
       dbReady = true;
       console.log('database ready');
       return;

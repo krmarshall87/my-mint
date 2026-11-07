@@ -108,6 +108,14 @@ const SCHEMA = [
     last_imported_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
+  // One balance per account per day, for net worth over time (Plaid only
+  // reports today's balance, so history has to be recorded as it happens).
+  `CREATE TABLE IF NOT EXISTS balance_snapshots (
+    date DATE NOT NULL,
+    account_id TEXT NOT NULL,
+    balance NUMERIC NOT NULL,
+    PRIMARY KEY (date, account_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS account_nicknames (
     account_id TEXT PRIMARY KEY,
     nickname TEXT NOT NULL
@@ -162,6 +170,7 @@ class PgStore {
     await this.pool.query('DELETE FROM category_overrides WHERE transaction_id IN (SELECT transaction_id FROM transactions WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM account_nicknames WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM manual_accounts WHERE item_id = $1', [itemId]);
+    await this.pool.query('DELETE FROM balance_snapshots WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM items WHERE item_id = $1', [itemId]);
   }
 
@@ -268,6 +277,21 @@ class PgStore {
          last_imported_at = EXCLUDED.last_imported_at`,
       [m.account_id, m.item_id, m.login_url, m.column_map ? JSON.stringify(m.column_map) : null, m.last_imported_at],
     );
+  }
+
+  async saveSnapshots(date, rows) {
+    for (const r of rows) {
+      await this.pool.query(
+        `INSERT INTO balance_snapshots (date, account_id, balance) VALUES ($1, $2, $3)
+         ON CONFLICT (date, account_id) DO UPDATE SET balance = EXCLUDED.balance`,
+        [date, r.account_id, r.balance],
+      );
+    }
+  }
+
+  async listSnapshots() {
+    const { rows } = await this.pool.query('SELECT date::text AS date, account_id, balance FROM balance_snapshots ORDER BY date');
+    return rows.map((r) => ({ ...r, balance: Number(r.balance) }));
   }
 
   async listRules() {
@@ -417,7 +441,10 @@ class FileStore {
 
   async deleteItem(itemId) {
     delete this.data.items[itemId];
-    for (const [k, v] of Object.entries(this.data.accounts)) if (v.item_id === itemId) { delete this.data.accounts[k]; delete this.data.nicknames?.[k]; delete this.data.manual?.[k]; }
+    for (const [k, v] of Object.entries(this.data.accounts)) if (v.item_id === itemId) {
+      delete this.data.accounts[k]; delete this.data.nicknames?.[k]; delete this.data.manual?.[k];
+      this.data.snapshots = (this.data.snapshots || []).filter((x) => x.account_id !== k);
+    }
     for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) { delete this.data.transactions[k]; delete this.data.overrides?.[k]; }
     this.save();
   }
@@ -459,6 +486,19 @@ class FileStore {
   async saveManualAccount(m) {
     (this.data.manual ||= {})[m.account_id] = { ...m };
     this.save();
+  }
+
+  async saveSnapshots(date, rows) {
+    const list = (this.data.snapshots ||= []);
+    for (const r of rows) {
+      const i = list.findIndex((x) => x.date === date && x.account_id === r.account_id);
+      if (i >= 0) list[i].balance = r.balance; else list.push({ date, account_id: r.account_id, balance: r.balance });
+    }
+    this.save();
+  }
+
+  async listSnapshots() {
+    return [...(this.data.snapshots || [])].sort((a, b) => a.date.localeCompare(b.date));
   }
 
   async listRules() {

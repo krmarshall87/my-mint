@@ -74,6 +74,24 @@
           <ul id="alerts" class="alerts"></ul>
         </div>
 
+        <div class="panel chart-card">
+          <div class="panel-head">
+            <h2>Current spend</h2>
+            <ul class="legend">
+              <li><span class="key-line" style="background:var(--series-1)"></span>This month</li>
+              <li><span class="key-area" style="background:var(--series-1)"></span>Last month</li>
+            </ul>
+          </div>
+          <div class="panel-body">
+            <div class="pace-head">
+              <strong id="pace-total" class="hero">$0</strong>
+              <p id="pace-delta" class="pace-delta"></p>
+            </div>
+            <div id="ov-pace" class="chart" data-label="Spending so far this month compared with last month, by day"></div>
+            <details class="chart-table"><summary>View as table</summary><div id="ov-pace-table"></div></details>
+          </div>
+        </div>
+
         <div class="panel">
           <div class="panel-head"><h2>Budget <span id="ov-budget-month" class="muted"></span></h2><a href="#budgets" class="link-btn">See all budgets →</a></div>
           <div id="ov-budget" class="ov-budget"></div>
@@ -183,6 +201,41 @@
           <div class="panel-body">
             <div id="chart-months" class="chart" data-label="Income and spending by month"></div>
             <details class="chart-table"><summary>View as table</summary><div id="table-months"></div></details>
+          </div>
+        </div>
+
+        <div class="panel chart-card">
+          <div class="panel-head">
+            <h2>Net income</h2>
+            <ul class="legend">
+              <li><span class="key-line" style="background:var(--text)"></span>Net income</li>
+              <li><span class="swatch" style="background:var(--series-1)"></span>Income</li>
+              <li><span class="swatch" style="background:var(--series-2)"></span>Spending</li>
+            </ul>
+          </div>
+          <div class="panel-body">
+            <div id="chart-net-income" class="chart" data-label="Income, spending and net income by month"></div>
+            <p id="net-income-best" class="note-line muted"></p>
+            <details class="chart-table"><summary>View as table</summary><div id="table-net-income"></div></details>
+          </div>
+        </div>
+
+        <div class="panel chart-card">
+          <div class="panel-head">
+            <div>
+              <h2>Net worth</h2>
+              <p class="muted subhead">All accounts, month end</p>
+            </div>
+            <ul class="legend">
+              <li><span class="key-line" style="background:var(--text)"></span>Net worth</li>
+              <li><span class="swatch" style="background:var(--series-1)"></span>Assets</li>
+              <li><span class="swatch" style="background:var(--series-2)"></span>Debts</li>
+            </ul>
+          </div>
+          <div class="panel-body">
+            <div id="chart-net-worth" class="chart" data-label="Assets, debts and net worth by month"></div>
+            <p id="net-worth-note" class="note-line muted"></p>
+            <details class="chart-table"><summary>View as table</summary><div id="table-net-worth"></div></details>
           </div>
         </div>
 
