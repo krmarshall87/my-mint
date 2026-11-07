@@ -5,7 +5,7 @@ A small personal finance app that links your bank accounts through [Plaid](https
 - **Overview:** accounts grouped into cash, credit cards, loans and investments, with balances and net worth. Alerts for budget overages, unusual spending, large purchases and income. This month's budgets as progress bars, a 12-month cash-flow chart, and recent transactions.
 - **Transactions:** search and filter by account, category and period; export to CSV. Click a category to fix it for one transaction, or save it as a rule.
 - **Categories:** Mint's category tree (Auto & Transport › Gas & Fuel, Food & Dining › Groceries, …). Plaid's detailed categories are mapped onto it, so a supermarket lands in Groceries and a café in Coffee Shops. When Plaid has no category, the app uses what that merchant usually is in your history, then a few built-in defaults; guesses are shown in italics.
-- **Rules:** Mint-style rules on the Rules tab. If the description contains / starts with / is exactly some text (optionally in one account, for an amount or amount range), rename the transaction and/or categorize it. Choose *Hide from Budgets & Trends* to keep a transaction without counting it. Rules apply to past and future transactions, or only new ones. They run top to bottom (first match wins), can be reordered, and show a live preview of what they'll match.
+- **Rules:** Mint-style rules on the Rules tab. If the description contains / starts with / is exactly some text (optionally in one account, for an amount or amount range), rename the transaction and/or categorize it. Choose *Hide from Budgets & Trends* to keep a transaction without counting it. Rules apply to past and future transactions, or only new ones. They run top to bottom (first match wins), can be reordered, show a live preview of what they'll match, and can be exported and imported as a file.
 - **Account names:** generic bank names like "CREDIT CARD" are replaced with the card's official name or "<Bank> Credit Card". Click ✎ next to an account to rename it.
 - **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
 - **Trends:** spending by category as a pie or bars, cash flow by month, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
@@ -79,6 +79,8 @@ All routes need Basic Auth.
 | PUT / DELETE | `/api/rules/:id` | Update or delete a rule |
 | POST | `/api/rules/order` | `{ "ids": [...] }` sets the order, top first |
 | POST | `/api/rules/preview` | What a rule would match, before saving |
+| GET | `/api/rules/export` | Download your rules as JSON |
+| POST | `/api/rules/import` | Add rules from an export file (`{ rules, dry_run }`); they go below your existing rules, duplicates are skipped |
 | GET | `/api/category-tree` | The category tree |
 | PATCH | `/api/accounts/:id` | `{ "nickname": "Freedom" }` renames an account (`""` clears it) |
 | GET | `/api/insights` | Totals, income and spending by month, spending by category and top merchants. Same filters as `/api/transactions`; transfers between your own accounts and credit-card payments are excluded. |

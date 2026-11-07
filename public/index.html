@@ -201,7 +201,12 @@
             <h1>Rules</h1>
             <p class="muted">Rules rename and categorize transactions automatically, past and future. They run top to bottom, and the first rule that matches a transaction wins. Use ↑ and ↓ to reorder.</p>
           </div>
-          <button type="button" id="new-rule" class="btn-primary">+ Create rule</button>
+          <div class="rules-buttons">
+            <button type="button" id="import-rules" class="btn">Import…</button>
+            <a href="/api/rules/export" id="export-rules" class="btn" download>Export</a>
+            <button type="button" id="new-rule" class="btn-primary">+ Create rule</button>
+            <input type="file" id="rules-file" accept="application/json,.json" hidden />
+          </div>
         </div>
         <div class="panel">
           <ol id="rule-list" class="rule-list"></ol>
@@ -284,6 +289,21 @@
         <span class="spacer"></span>
         <button type="button" id="rule-cancel" class="btn">Cancel</button>
         <button type="submit" class="btn-primary">Save rule</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="import-dialog" class="dialog dialog-wide" aria-labelledby="import-title">
+    <form id="import-form" method="dialog">
+      <h3 id="import-title">Import rules</h3>
+      <p id="import-summary" class="muted"></p>
+      <ul id="import-list" class="import-list"></ul>
+      <p class="hint muted">Imported rules go below your existing rules, so the ones you wrote yourself still win. Counts show transactions each rule would change that no earlier rule already covers.</p>
+      <div class="dialog-actions">
+        <label class="check"><input type="checkbox" id="import-all" checked /> Select all</label>
+        <span class="spacer"></span>
+        <button type="button" id="import-cancel" class="btn">Cancel</button>
+        <button type="submit" id="import-confirm" class="btn-primary">Add rules</button>
       </div>
     </form>
   </dialog>

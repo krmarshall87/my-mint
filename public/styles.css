@@ -349,3 +349,13 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
   .preview-list li { grid-template-columns: 3.8em minmax(0, 1fr) auto; }
   .pv-cat { display: none; }
 }
+
+/* --------------------------------------------------------- Import rules -- */
+.rules-buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.rules-buttons a.btn { text-decoration: none; display: inline-block; }
+.import-list { list-style: none; margin: 0; padding: 0; max-height: min(55vh, 520px); overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; }
+.import-row { display: grid; grid-template-columns: 20px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.import-row:last-child { border-bottom: 0; }
+.import-row input { margin-top: 3px; }
+.import-row.skipped { opacity: .65; }
+.import-row small { display: block; overflow-wrap: anywhere; }
