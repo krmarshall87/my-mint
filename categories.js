@@ -4,8 +4,11 @@
 // can use a parent ("Food & Dining") or a subcategory ("Groceries").
 
 const TREE = [
-  ['Auto & Transport', ['Auto Insurance', 'Auto Payment', 'Gas & Fuel', 'Parking', 'Public Transportation', 'Service & Parts']],
-  ['Bills & Utilities', ['Domain & Hosting', 'Electricity', 'Garbage & Recycling', 'Home Phone', 'Internet', 'Mobile Phone', 'Television', 'Utilities']],
+  ['Auto & Transport', ['Auto Insurance', 'Gas & Fuel', 'Parking', 'Public Transportation', 'Service & Parts']],
+  // Mortgage and loan payments are non-optional bills: the payment from
+  // checking is the expense. (The same money arriving in the loan account is
+  // excluded automatically; see "Loan Payment Received".)
+  ['Bills & Utilities', ['Domain & Hosting', 'Electricity', 'Garbage & Recycling', 'Home Phone', 'Internet', 'Loan Payment', 'Mobile Phone', 'Mortgage & Rent', 'Television', 'Utilities']],
   ['Business Services', ['Advertising', 'Legal', 'Office Supplies', 'Printing', 'Shipping']],
   ['Education', ['Books & Supplies', 'Student Loan', 'Tuition']],
   ['Entertainment', ['Amusement', 'Arts', 'Movies & DVDs', 'Music', 'Newspaper & Magazines']],
@@ -14,7 +17,7 @@ const TREE = [
   ['Food & Dining', ['Alcohol & Bars', 'Coffee Shops', 'Fast Food', 'Groceries', 'Restaurants']],
   ['Gifts & Donations', ['Charity', 'Gift']],
   ['Health & Fitness', ['Dentist', 'Doctor', 'Eyecare', 'Gym', 'Health Insurance', 'Pharmacy', 'Sports']],
-  ['Home', ['Furnishings', 'Home Improvement', 'Home Insurance', 'Home Services', 'Home Supplies', 'Lawn & Garden', 'Mortgage & Rent']],
+  ['Home', ['Furnishings', 'Home Improvement', 'Home Insurance', 'Home Services', 'Home Supplies', 'Lawn & Garden']],
   ['Income', ['Bonus', 'Interest Income', 'Paycheck', 'Reimbursement', 'Rental Income']],
   ['Investments', ['Buy', 'Deposit', 'Dividend & Cap Gains', 'Sell', 'Withdrawal']],
   ['Kids', ['Allowance', 'Baby Supplies', 'Child Support', 'Daycare', 'Kids Activities', 'Toys']],
@@ -23,7 +26,7 @@ const TREE = [
   ['Shopping', ['Books', 'Clothing', 'Electronics & Software', 'Hobbies', 'Sporting Goods']],
   ['Taxes', ['Federal Tax', 'Local Tax', 'Property Tax', 'State Tax']],
   ['Travel', ['Air Travel', 'Hotel', 'Rental Car', 'Vacation']],
-  ['Transfer', ['Credit Card Payment', 'Transfer for Cash Requirement']],
+  ['Transfer', ['Credit Card Payment', 'Loan Payment Received', 'Transfer for Cash Requirement']],
   ['Uncategorized', []],
   ['Hide from Budgets & Trends', []],
 ];
@@ -60,7 +63,8 @@ const DETAILED_MAP = {
   TRANSFER_OUT_WITHDRAWAL: 'Transfer for Cash Requirement',
   LOAN_PAYMENTS_CREDIT_CARD_PAYMENT: 'Credit Card Payment',
   // Loans
-  LOAN_PAYMENTS_CAR_PAYMENT: 'Auto Payment',
+  LOAN_PAYMENTS_CAR_PAYMENT: 'Loan Payment',
+  LOAN_PAYMENTS_PERSONAL_LOAN_PAYMENT: 'Loan Payment',
   LOAN_PAYMENTS_MORTGAGE_PAYMENT: 'Mortgage & Rent',
   LOAN_PAYMENTS_STUDENT_LOAN_PAYMENT: 'Student Loan',
   // Fees
@@ -141,7 +145,7 @@ const PRIMARY_MAP = {
   INCOME: 'Income',
   TRANSFER_IN: 'Transfer',
   TRANSFER_OUT: 'Transfer',
-  LOAN_PAYMENTS: 'Financial',
+  LOAN_PAYMENTS: 'Loan Payment',
   BANK_FEES: 'Fees & Charges',
   ENTERTAINMENT: 'Entertainment',
   FOOD_AND_DRINK: 'Food & Dining',
@@ -166,6 +170,9 @@ function fromPlaid(primary, detailed) {
 
 // Budgets, rules and fixes saved before this tree used Plaid primaries
 // (e.g. FOOD_AND_DRINK). Translate those; pass current names through.
-const fromLegacy = (c) => (isKnownCategory(c) ? c : PRIMARY_MAP[c] || (c === 'UNCATEGORIZED' ? UNCATEGORIZED : null));
+// Categories renamed or merged since; saved budgets, fixes and rules follow.
+const RENAMED = { 'Auto Payment': 'Loan Payment' };
+const fromLegacy = (c) =>
+  isKnownCategory(c) ? c : RENAMED[c] || PRIMARY_MAP[c] || (c === 'UNCATEGORIZED' ? UNCATEGORIZED : null);
 
 module.exports = { TREE, isKnownCategory, parentOf, isExcluded, isIncome, fromPlaid, fromLegacy, UNCATEGORIZED };

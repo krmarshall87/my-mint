@@ -355,6 +355,7 @@ async function categorizedTransactions() {
     store.listTxRules(),
     store.listOverrides(),
   ]);
+  const accountType = new Map((await store.listAccounts()).map((a) => [a.account_id, a.type]));
   const override = new Map(overrides.map((o) => [o.transaction_id, o.category]));
   const plaidCat = (t) => fromPlaid(t.category, t.category_detailed);
 
@@ -376,6 +377,14 @@ async function categorizedTransactions() {
     let category = plaidCat(t);
     let source = 'plaid';
     if (override.has(t.transaction_id)) { category = override.get(t.transaction_id); source = 'manual'; }
+    // A loan account's own activity isn't cash you spent: money arriving is
+    // the other half of a payment you already count (the bill paid from
+    // checking), and interest or escrow added to the balance is paid by that
+    // same bill. Loans don't get refunds.
+    else if (accountType.get(t.account_id) === 'loan') {
+      category = t.amount < 0 ? 'Loan Payment Received' : 'Hide from Budgets & Trends';
+      source = 'auto';
+    }
     else if (rule?.category) { category = rule.category; source = 'rule'; }
     else if (category === UNCATEGORIZED) {
       const guess = usual.get(merchantKey(t)) || DEFAULT_CATEGORIES.find(([re]) => re.test(text))?.[1];
@@ -826,6 +835,11 @@ async function migrateLegacyCategories() {
   for (const o of await store.listOverrides()) {
     if (isKnownCategory(o.category)) continue;
     await store.setOverride(o.transaction_id, fromLegacy(o.category) || UNCATEGORIZED);
+    changed += 1;
+  }
+  for (const r of await store.listTxRules()) {
+    if (!r.category || isKnownCategory(r.category)) continue;
+    await store.saveTxRule({ ...r, category: fromLegacy(r.category) || UNCATEGORIZED });
     changed += 1;
   }
   // Old one-field rules ("contains X → category") become full rules.

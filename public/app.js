@@ -323,6 +323,7 @@ function renderCashflow(chartEl, tableEl, months) {
 
 const SOURCE_NOTE = {
   manual: 'You set this category.',
+  auto: 'Activity on a loan account is covered by the payment you make from checking, so it isn’t counted again.',
   rule: 'Set by one of your rules.',
   inferred: 'Guessed: Plaid had no category, so this is based on the merchant.',
   plaid: 'Category from your bank, via Plaid.',

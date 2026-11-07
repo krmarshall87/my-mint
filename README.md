@@ -10,7 +10,7 @@ A small personal finance app that links your bank accounts through [Plaid](https
 - **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
 - **Trends:** spending by category as a pie or bars, cash flow by month, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
 
-Income is the Income categories (Paycheck, Bonus, …) plus Dividend & Cap Gains. Other money in is a refund and reduces spending. Transfers, credit-card payments, investment trades and anything in *Hide from Budgets & Trends* are left out of both.
+Income is the Income categories (Paycheck, Bonus, …) plus Dividend & Cap Gains. Other money in is a refund and reduces spending. Transfers, credit-card payments, investment trades and anything in *Hide from Budgets & Trends* are left out of both. Mortgage and loan payments are bills (Bills & Utilities) and count as spending; the matching activity on the loan account itself is left out automatically so nothing is counted twice.
 
 - **Backend:** Node + Express, using the official `plaid` SDK. It calls `/link/token/create`, `/item/public_token/exchange` and `/transactions/sync`.
 - **Storage:** CockroachDB (or any Postgres) when `DATABASE_URL` is set. Tables are created automatically on startup. Without it, data goes to a local JSON file (`data/store.json`) for development.
