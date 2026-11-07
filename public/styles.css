@@ -402,3 +402,15 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .key-line { display: inline-block; width: 14px; height: 2px; border-radius: 1px; }
 .key-area { display: inline-block; width: 12px; height: 10px; border-radius: 2px; opacity: .25; }
 .note-line { font-size: 12px; margin: 8px 0 0; }
+
+/* ---------------------------------------------------------------- Bills -- */
+.bill-list ul { list-style: none; margin: 0; padding: 0; }
+.bill-total { margin: 0; padding: 10px 14px 4px; font-weight: 600; }
+.bill-row { display: grid; grid-template-columns: 4.5em minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+.bill-row:last-child { border-bottom: 0; }
+.bill-date { font-size: 12px; text-transform: uppercase; color: var(--muted); }
+.bill-date.soon, .due.soon { color: var(--text); font-weight: 700; }
+.bill-date.late, .due.late { color: var(--warn); }
+.bill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bill-name small, .bills-table .due { display: block; color: var(--muted); font-size: 11px; text-transform: none; }
+.bills-table tr.card-payment td { color: var(--muted); }
