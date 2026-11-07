@@ -73,6 +73,7 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 - JSON bodies are parsed only after the password check. `x-powered-by` is off. Expired lockout records are pruned every 15 minutes.
 - Keep the CSP strict. Plaid Link needs `script-src` and `frame-src https://cdn.plaid.com` and inline styles. Load nothing else from third parties.
 - Escape all server data before putting it into `innerHTML` (use `esc()` in `app.js`).
+- Prefer building DOM with `el(tag, attrs, ...children)` (from `charts.js`): each child is a node or text, and text is never parsed as HTML. `test/ui.test.js` opens every tab in Playwright (skipped where it isn't installed, as in CI) and fails on `[object …]`, `undefined` or `NaN` in the page.
 
 ## Frontend
 

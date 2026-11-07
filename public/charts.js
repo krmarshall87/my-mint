@@ -3,12 +3,17 @@
 (function () {
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
-  function el(tag, attrs = {}, text) {
+  // el(tag, attrs, ...children): children are text (always added as text, never
+  // parsed as HTML) or nodes, in order. null, undefined and false are skipped.
+  function el(tag, attrs = {}, ...children) {
     const node = tag.startsWith('svg:')
       ? document.createElementNS(SVG_NS, tag.slice(4))
       : document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) if (v !== undefined && v !== null) node.setAttribute(k, v);
-    if (text !== undefined) node.textContent = text;
+    for (const c of children) {
+      if (c === undefined || c === null || c === false) continue;
+      node.append(c instanceof Node ? c : String(c));
+    }
     return node;
   }
 
