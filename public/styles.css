@@ -484,3 +484,8 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .schedule .inline-check { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; margin: 8px 0; }
 .empty-note { padding: 16px; margin: 0; }
 .plan-table td.interest-cell { white-space: normal; min-width: 7em; max-width: 9em; }
+.whatif-inputs select { border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; background: var(--bg); color: var(--text); font: inherit; }
+.whatif-inputs .field.wide { flex: 1 1 240px; }
+.whatif-inputs .field.wide input { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--bg); color: var(--text); font: inherit; }
+.whatif-inputs .hint { font-size: 11px; }
+.schedule tr.next-row td { background: color-mix(in srgb, var(--warning) 22%, transparent); font-weight: 600; }
