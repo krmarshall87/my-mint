@@ -38,6 +38,16 @@ npm run dev             # http://localhost:3000
 
 With `PLAID_ENV=sandbox`, link any bank in Plaid Link and sign in with `user_good` / `pass_good`.
 
+### Tests
+
+```bash
+npm run check   # syntax check
+npm test        # loan math + the whole API with Plaid stubbed, on the JSON store
+TEST_DATABASE_URL=postgresql://postgres@localhost:5432/mymint_test npm test   # …and on Postgres (a local throwaway database: its tables are dropped)
+```
+
+GitHub Actions runs both on every pull request.
+
 ## Deploy to Render
 
 1. Push this repo to GitHub.
