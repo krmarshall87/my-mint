@@ -99,6 +99,15 @@ const SCHEMA = [
     transaction_id TEXT PRIMARY KEY,
     category TEXT NOT NULL
   )`,
+  // Accounts you add yourself and fill from CSV files (cards Plaid can't reach).
+  `CREATE TABLE IF NOT EXISTS manual_accounts (
+    account_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    login_url TEXT,
+    column_map TEXT,
+    last_imported_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
   `CREATE TABLE IF NOT EXISTS account_nicknames (
     account_id TEXT PRIMARY KEY,
     nickname TEXT NOT NULL
@@ -139,7 +148,8 @@ class PgStore {
     await this.pool.query(
       `INSERT INTO items (item_id, access_token, institution_id, institution_name)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (item_id) DO UPDATE SET access_token = EXCLUDED.access_token`,
+       ON CONFLICT (item_id) DO UPDATE SET access_token = EXCLUDED.access_token,
+         institution_name = COALESCE(EXCLUDED.institution_name, items.institution_name)`,
       [item_id, access_token, institution_id, institution_name],
     );
   }
@@ -151,6 +161,7 @@ class PgStore {
   async deleteItem(itemId) {
     await this.pool.query('DELETE FROM category_overrides WHERE transaction_id IN (SELECT transaction_id FROM transactions WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM account_nicknames WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
+    await this.pool.query('DELETE FROM manual_accounts WHERE item_id = $1', [itemId]);
     await this.pool.query('DELETE FROM items WHERE item_id = $1', [itemId]);
   }
 
@@ -243,6 +254,20 @@ class PgStore {
 
   async deleteTxRule(id) {
     await this.pool.query('DELETE FROM tx_rules WHERE id = $1', [id]);
+  }
+
+  async listManualAccounts() {
+    const { rows } = await this.pool.query('SELECT account_id, item_id, login_url, column_map, last_imported_at FROM manual_accounts');
+    return rows.map((r) => ({ ...r, column_map: r.column_map ? JSON.parse(r.column_map) : null, last_imported_at: r.last_imported_at ? new Date(r.last_imported_at).toISOString() : null }));
+  }
+
+  async saveManualAccount(m) {
+    await this.pool.query(
+      `INSERT INTO manual_accounts (account_id, item_id, login_url, column_map, last_imported_at) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (account_id) DO UPDATE SET login_url = EXCLUDED.login_url, column_map = EXCLUDED.column_map,
+         last_imported_at = EXCLUDED.last_imported_at`,
+      [m.account_id, m.item_id, m.login_url, m.column_map ? JSON.stringify(m.column_map) : null, m.last_imported_at],
+    );
   }
 
   async listRules() {
@@ -380,7 +405,7 @@ class FileStore {
   async saveItem(item) {
     const existing = this.data.items[item.item_id];
     this.data.items[item.item_id] = existing
-      ? { ...existing, access_token: item.access_token }
+      ? { ...existing, access_token: item.access_token, institution_name: item.institution_name ?? existing.institution_name }
       : { cursor: null, error: null, last_synced_at: null, created_at: new Date().toISOString(), ...item };
     this.save();
   }
@@ -392,7 +417,7 @@ class FileStore {
 
   async deleteItem(itemId) {
     delete this.data.items[itemId];
-    for (const [k, v] of Object.entries(this.data.accounts)) if (v.item_id === itemId) { delete this.data.accounts[k]; delete this.data.nicknames?.[k]; }
+    for (const [k, v] of Object.entries(this.data.accounts)) if (v.item_id === itemId) { delete this.data.accounts[k]; delete this.data.nicknames?.[k]; delete this.data.manual?.[k]; }
     for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) { delete this.data.transactions[k]; delete this.data.overrides?.[k]; }
     this.save();
   }
@@ -424,6 +449,15 @@ class FileStore {
 
   async deleteTxRule(id) {
     this.data.txRules = (this.data.txRules || []).filter((r) => r.id !== id);
+    this.save();
+  }
+
+  async listManualAccounts() {
+    return Object.values(this.data.manual || {}).map((m) => ({ ...m }));
+  }
+
+  async saveManualAccount(m) {
+    (this.data.manual ||= {})[m.account_id] = { ...m };
     this.save();
   }
 

@@ -44,6 +44,7 @@
         <span>Net worth</span><strong id="net-worth"></strong>
       </div>
       <p id="no-accounts" class="empty-note" hidden>No accounts yet. Click <strong>+ Add account</strong> to connect a bank.</p>
+      <div class="manual-add"><button type="button" id="add-manual" class="link-btn">+ Add manual account</button><span class="muted"> for cards Plaid can’t connect</span></div>
     </aside>
 
     <div class="content">
@@ -304,6 +305,73 @@
         <span class="spacer"></span>
         <button type="button" id="import-cancel" class="btn">Cancel</button>
         <button type="submit" id="import-confirm" class="btn-primary">Add rules</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="manual-dialog" class="dialog" aria-labelledby="manual-title">
+    <form id="manual-form" method="dialog">
+      <h3 id="manual-title">Add a manual account</h3>
+      <p class="muted">For cards and accounts Plaid can’t connect. You’ll fill it by importing the CSV your bank’s website lets you download.</p>
+      <label class="field">Account name <input name="name" required maxlength="60" placeholder="e.g. Verizon Visa" autocomplete="off" /></label>
+      <label class="field">Bank or card issuer <input name="institution" maxlength="60" placeholder="e.g. Synchrony" autocomplete="off" /></label>
+      <div class="field-row">
+        <label class="field">Type
+          <select name="type">
+            <option value="credit">Credit card</option>
+            <option value="depository">Checking or savings</option>
+            <option value="loan">Loan</option>
+            <option value="investment">Investment</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+        <label class="field">Last 4 digits <input name="mask" maxlength="4" inputmode="numeric" placeholder="1234" autocomplete="off" /></label>
+      </div>
+      <label class="field">Login page <input name="login_url" type="url" placeholder="https://…" autocomplete="off" />
+        <span class="hint">Where you sign in to download transactions. Opens in a new tab from the sidebar and from reminders.</span>
+      </label>
+      <label class="field" id="manual-balance-field">Current balance (optional) <input name="balance" type="number" step="0.01" placeholder="What you owe or have" /></label>
+      <p id="manual-error" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="manual-delete" class="link-btn danger" hidden>Remove account</button>
+        <span class="spacer"></span>
+        <button type="button" id="manual-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="csv-dialog" class="dialog dialog-wide" aria-labelledby="csv-title">
+    <form id="csv-form" method="dialog">
+      <h3 id="csv-title">Import CSV</h3>
+      <p id="csv-status" class="muted"></p>
+      <ol class="csv-steps">
+        <li id="csv-login"></li>
+        <li><label class="file-pick">Choose the file <input type="file" name="file" accept=".csv,text/csv,text/plain" /></label></li>
+      </ol>
+      <div id="csv-mapping" class="csv-mapping" hidden>
+        <fieldset>
+          <legend>Columns</legend>
+          <div class="field-grid">
+            <label class="field">Date <select name="date"></select></label>
+            <label class="field">Description <select name="description"></select></label>
+            <label class="field">Amount <select name="amount"></select></label>
+            <label class="field">Or: charges <select name="debit"></select></label>
+            <label class="field">and: credits <select name="credit"></select></label>
+          </div>
+          <div class="apply sign">
+            <label><input type="radio" name="sign" value="purchases-positive" /> Purchases are positive numbers</label>
+            <label><input type="radio" name="sign" value="purchases-negative" /> Purchases are negative numbers</label>
+          </div>
+        </fieldset>
+        <label class="field">Balance now (optional) <input name="balance" type="number" step="0.01" placeholder="From your statement or the bank’s site" /></label>
+        <div id="csv-preview" class="rule-preview" aria-live="polite"></div>
+      </div>
+      <p id="csv-error" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" id="csv-cancel" class="btn">Cancel</button>
+        <button type="submit" id="csv-import" class="btn-primary" disabled>Import</button>
       </div>
     </form>
   </dialog>

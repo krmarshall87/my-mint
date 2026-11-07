@@ -6,6 +6,7 @@ A small personal finance app that links your bank accounts through [Plaid](https
 - **Transactions:** search and filter by account, category and period; export to CSV. Click a category to fix it for one transaction, or save it as a rule.
 - **Categories:** Mint's category tree (Auto & Transport › Gas & Fuel, Food & Dining › Groceries, …). Plaid's detailed categories are mapped onto it, so a supermarket lands in Groceries and a café in Coffee Shops. When Plaid has no category, the app uses what that merchant usually is in your history, then a few built-in defaults; guesses are shown in italics.
 - **Rules:** Mint-style rules on the Rules tab. If the description contains / starts with / is exactly some text (optionally in one account, for an amount or amount range), rename the transaction and/or categorize it. Choose *Hide from Budgets & Trends* to keep a transaction without counting it. Rules apply to past and future transactions, or only new ones. They run top to bottom (first match wins), can be reordered, show a live preview of what they'll match, and can be exported and imported as a file.
+- **Manual accounts:** for cards Plaid can't connect (a Verizon Visa, a store card), add a manual account with its login page and import the CSV your card's website lets you download. Columns are guessed and remembered per account, there's a preview, and re-importing an overlapping file never duplicates. The sidebar shows when each was last updated and links to its login page in a new tab; after 30 days without an import, you get a reminder (`MANUAL_STALE_DAYS` to change it).
 - **Account names:** generic bank names like "CREDIT CARD" are replaced with the card's official name or "<Bank> Credit Card". Click ✎ next to an account to rename it.
 - **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
 - **Trends:** spending by category as a pie or bars, cash flow by month, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
@@ -82,6 +83,9 @@ All routes need Basic Auth.
 | GET | `/api/rules/export` | Download your rules as JSON |
 | POST | `/api/rules/import` | Add rules from an export file (`{ rules, dry_run }`); they go below your existing rules, duplicates are skipped |
 | GET | `/api/category-tree` | The category tree |
+| POST | `/api/manual-accounts` | Add a manual account: `{ name, institution, type, mask, login_url, balance }` |
+| PATCH | `/api/manual-accounts/:id` | Edit it |
+| POST | `/api/manual-accounts/:id/import` | Import rows parsed from a CSV: `{ rows: [{ date, description, amount }], column_map, balance }` (amount positive = money out) |
 | PATCH | `/api/accounts/:id` | `{ "nickname": "Freedom" }` renames an account (`""` clears it) |
 | GET | `/api/insights` | Totals, income and spending by month, spending by category and top merchants. Same filters as `/api/transactions`; transfers between your own accounts and credit-card payments are excluded. |
 | GET | `/api/transactions` | Filters: `q`, `account_id`, `category`, `start`, `end`, `limit`, `offset` |

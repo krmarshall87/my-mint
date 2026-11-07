@@ -138,6 +138,24 @@ function ago(ts) {
   return hrs < 24 ? `${hrs} hr ago` : `${Math.round(hrs / 24)} days ago`;
 }
 
+// Manual accounts: when they were last imported, flagged once it's been too long.
+const safeUrl = (u) => (/^https?:\/\//i.test(u || '') ? u : null);
+function importedLabel(a) {
+  if (!a.last_imported_at) return 'never imported';
+  const d = a.days_since_import;
+  return d === 0 ? 'updated today' : d === 1 ? 'updated yesterday' : `updated ${d} days ago`;
+}
+function manualLine(a) {
+  const url = safeUrl(a.login_url);
+  return `<span class="manual-line ${a.stale ? 'stale' : ''}">
+    <span title="${a.last_imported_at ? `Last import: ${esc(new Date(a.last_imported_at).toLocaleString())}` : 'No CSV imported yet'}">${a.stale ? '⚠ ' : ''}Manual · ${esc(importedLabel(a))}</span>
+    <span class="manual-actions">
+      <button type="button" class="link-btn" data-csv="${esc(a.account_id)}">Import CSV</button>
+      ${url ? `<a class="link-btn" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Log in ↗</a>` : ''}
+    </span>
+  </span>`;
+}
+
 function renderAccounts() {
   const box = $('#accounts');
   const selected = filtersForm.account_id.value;
@@ -156,16 +174,17 @@ function renderAccounts() {
         <span class="num ${total < 0 ? 'neg' : ''}">${money(total)}</span>
       </button>
       <ul class="acct-list">${accts
-        .map((a) => `<li class="acct ${a.account_id === selected ? 'active' : ''}" data-account="${esc(a.account_id)}" tabindex="0">
-          <span class="acct-name">${esc(a.display_name)}<button class="rename" data-rename="${esc(a.account_id)}" title="Rename" aria-label="Rename ${esc(a.display_name)}">✎</button><small>${esc(a.institution_name)}${a.mask ? ` ••${esc(a.mask)}` : ''}</small></span>
-          <span class="acct-bal ${signedBalance(a) < 0 ? 'neg' : ''}">${a.current_balance == null ? '—' : money(signedBalance(a), a.iso_currency_code)}<small class="muted">${esc(ago(itemById[a.item_id]?.last_synced_at))}</small></span>
+        .map((a) => `<li class="acct ${a.account_id === selected ? 'active' : ''} ${a.manual ? 'manual' : ''}" data-account="${esc(a.account_id)}" tabindex="0">
+          <span class="acct-name">${esc(a.display_name)}<button class="rename" data-rename="${esc(a.account_id)}" title="${a.manual ? 'Edit' : 'Rename'}" aria-label="${a.manual ? 'Edit' : 'Rename'} ${esc(a.display_name)}">✎</button><small>${esc(a.institution_name)}${a.mask ? ` ••${esc(a.mask)}` : ''}</small></span>
+          <span class="acct-bal ${signedBalance(a) < 0 ? 'neg' : ''}">${a.current_balance == null ? '—' : money(signedBalance(a), a.iso_currency_code)}${a.manual ? '' : `<small class="muted">${esc(ago(itemById[a.item_id]?.last_synced_at))}</small>`}</span>
+          ${a.manual ? manualLine(a) : ''}
         </li>`)
         .join('')}</ul>
     </section>`;
   }).join('') + (state.items.length ? `<section class="acct-group" data-group="connections">
       <div class="group-head" style="cursor:default"><span>Connections</span></div>
       ${state.items.map((i) => `<div class="inst-actions">
-          <span>${esc(i.institution_name)}</span>
+          <span>${esc(i.institution_name)}${i.manual ? ' <small class="muted">(manual)</small>' : ''}</span>
           ${i.error ? `<button class="link-btn" data-relink="${esc(i.item_id)}">reconnect</button>` : ''}
           <button class="link-btn danger" data-remove="${esc(i.item_id)}">remove</button>
         </div>${i.error ? `<div class="inst-error">${esc(i.error)}</div>` : ''}`).join('')}
@@ -231,7 +250,14 @@ function renderAlerts(alerts) {
     const li = el('li', { class: `alert ${a.level}` });
     li.appendChild(el('span', { class: 'alert-icon', 'aria-label': a.level }, ICON[a.level] || 'i'));
     const text = el('div');
-    for (const p of a.parts) text.appendChild(p.strong ? el('strong', {}, p.t) : document.createTextNode(p.t));
+    for (const p of a.parts) {
+      if (p.href && safeUrl(p.href)) text.appendChild(el('a', { href: p.href, target: '_blank', rel: 'noopener noreferrer' }, `${p.t} ↗`));
+      else if (p.action === 'import') {
+        const btn = el('button', { type: 'button', class: 'link-btn inline' }, p.t);
+        btn.addEventListener('click', () => openCsvDialog(p.account_id));
+        text.appendChild(btn);
+      } else text.appendChild(p.strong ? el('strong', {}, p.t) : document.createTextNode(p.t));
+    }
     li.appendChild(text);
     li.appendChild(el('span', { class: 'alert-date' }, shortDate(a.date)));
     const x = el('button', { class: 'alert-dismiss', title: 'Dismiss', 'aria-label': 'Dismiss alert' }, '×');
@@ -928,6 +954,264 @@ $('#import-form').addEventListener('submit', async (e) => {
   } catch (err) { alert(err.message); }
 });
 
+
+// -------------------------------------------------------- Manual accounts --
+let editingManual = null;
+const manualForm = $('#manual-form');
+
+function openManualDialog(a = null) {
+  editingManual = a;
+  manualForm.reset();
+  $('#manual-title').textContent = a ? `Edit ${a.display_name}` : 'Add a manual account';
+  $('#manual-delete').hidden = !a;
+  $('#manual-balance-field').hidden = !!a;
+  $('#manual-error').hidden = true;
+  if (a) {
+    manualForm.name.value = a.name || '';
+    manualForm.institution.value = a.institution_name || '';
+    manualForm.type.value = a.type || 'credit';
+    manualForm.mask.value = a.mask || '';
+    manualForm.login_url.value = a.login_url || '';
+  }
+  $('#manual-dialog').showModal();
+  manualForm.name.focus();
+}
+
+manualForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = manualForm;
+  const body = { name: f.name.value, institution: f.institution.value, type: f.type.value, mask: f.mask.value, login_url: f.login_url.value };
+  if (!editingManual) body.balance = f.balance.value;
+  try {
+    const saved = editingManual
+      ? await api(`/api/manual-accounts/${encodeURIComponent(editingManual.account_id)}`, { method: 'PATCH', body })
+      : await api('/api/manual-accounts', { method: 'POST', body });
+    $('#manual-dialog').close();
+    await refreshAll();
+    if (!editingManual) openCsvDialog(saved.account_id); // straight to the first import
+  } catch (err) {
+    const box = $('#manual-error');
+    box.textContent = err.message;
+    box.hidden = false;
+  }
+});
+$('#manual-cancel').addEventListener('click', () => $('#manual-dialog').close());
+$('#manual-delete').addEventListener('click', async () => {
+  if (!confirm(`Remove ${editingManual.display_name} and every transaction imported into it?`)) return;
+  await api(`/api/items/${encodeURIComponent(editingManual.item_id)}`, { method: 'DELETE' });
+  $('#manual-dialog').close();
+  filtersForm.account_id.value = '';
+  await refreshAll();
+});
+$('#add-manual').addEventListener('click', () => openManualDialog());
+
+// ------------------------------------------------------------- CSV import --
+// Parsed in the browser: the file itself never leaves your computer; only the
+// rows you import are sent.
+function parseCsv(text) {
+  text = text.replace(/^﻿/, '');
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim()) || '';
+  const delim = [',', ';', '\t'].map((d) => [d, firstLine.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = [];
+  let row = [], cell = '', quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === delim) { row.push(cell); cell = ''; }
+    else if (c === '\n' || c === '\r') {
+      if (c === '\r' && text[i + 1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some((x) => x.trim())) rows.push(row);
+      row = [];
+    } else cell += c;
+  }
+  row.push(cell);
+  if (row.some((x) => x.trim())) rows.push(row);
+  // Some banks put a few lines of account info above the header.
+  const headerAt = Math.max(0, rows.findIndex((r) => r.some((x) => /date/i.test(x))));
+  const header = rows[headerAt].map((h, i) => h.trim() || `Column ${i + 1}`);
+  return { header, data: rows.slice(headerAt + 1).filter((r) => r.length >= Math.min(2, header.length)) };
+}
+
+const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+function parseDate(v) {
+  const s = String(v || '').trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
+  m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/); // US: month/day/year
+  if (m) {
+    const y = m[3].length === 2 ? `20${m[3]}` : m[3];
+    if (Number(m[1]) <= 12 && Number(m[2]) <= 31) return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  }
+  m = s.match(/^([A-Za-z]{3})[a-z]*\.? (\d{1,2}),? (\d{4})/); // Nov 5, 2026
+  if (m && MONTHS[m[1].toLowerCase()]) return `${m[3]}-${String(MONTHS[m[1].toLowerCase()]).padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  m = s.match(/^(\d{1,2})[ -]([A-Za-z]{3})[a-z]*[ -](\d{4})/); // 05-Nov-2026
+  if (m && MONTHS[m[2].toLowerCase()]) return `${m[3]}-${String(MONTHS[m[2].toLowerCase()]).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return null;
+}
+function parseAmount(v) {
+  let s = String(v ?? '').trim();
+  if (!s) return null;
+  const neg = /^\(.*\)$/.test(s) || /^-/.test(s) || /-$/.test(s) || /\bCR$/i.test(s);
+  s = s.replace(/[()$€£,\s]|CR$|DR$/gi, '').replace(/^-|-$/g, '');
+  const n = Number(s);
+  if (!Number.isFinite(n) || s === '') return null;
+  return neg ? -n : n;
+}
+
+function guessColumns(header) {
+  const find = (...res) => {
+    for (const re of res) { const i = header.findIndex((h) => re.test(h)); if (i >= 0) return header[i]; }
+    return '';
+  };
+  return {
+    date: find(/trans(action)?\.? ?date/i, /^date$/i, /post(ed|ing)? ?date/i, /date/i),
+    description: find(/desc/i, /merchant/i, /payee/i, /^name$/i, /details|memo/i),
+    amount: find(/^amount$/i, /amount/i),
+    debit: find(/debit|withdraw|charge/i),
+    credit: find(/credit(?!.*card)|deposit|payment/i),
+  };
+}
+
+let csvState = null;
+function csvAccount() { return state.accounts.find((a) => a.account_id === csvState?.accountId); }
+
+function openCsvDialog(accountId) {
+  const a = state.accounts.find((x) => x.account_id === accountId);
+  if (!a) return;
+  csvState = { accountId, parsed: null };
+  const f = $('#csv-form');
+  f.reset();
+  $('#csv-title').textContent = `Import CSV · ${acctLabel(a)}`;
+  $('#csv-status').textContent = a.last_imported_at
+    ? `Last updated ${new Date(a.last_imported_at).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })} (${importedLabel(a)}).`
+    : 'Nothing imported yet.';
+  const login = $('#csv-login');
+  login.replaceChildren();
+  const url = safeUrl(a.login_url);
+  if (url) login.append(el('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, 'Log in to your account ↗'), document.createTextNode(' and download your transactions as a CSV file.'));
+  else login.append(document.createTextNode('Download your transactions as a CSV file from your bank’s website. (Add its login page with ✎ to get a direct link here.)'));
+  $('#csv-mapping').hidden = true;
+  $('#csv-error').hidden = true;
+  $('#csv-import').disabled = true;
+  $('#csv-dialog').showModal();
+}
+
+// Turn the parsed CSV into rows for the server, with Plaid's sign (positive = money out).
+function csvRows() {
+  const f = $('#csv-form');
+  const { header, data } = csvState.parsed;
+  const col = (name) => header.indexOf(f[name].value);
+  const iDate = col('date'), iDesc = col('description'), iAmt = col('amount'), iDeb = col('debit'), iCred = col('credit');
+  const purchasesPositive = f.sign.value !== 'purchases-negative';
+  const rows = [], bad = [];
+  for (const r of data) {
+    const date = parseDate(r[iDate]);
+    const description = (r[iDesc] || '').trim();
+    let amount = null;
+    if (iAmt >= 0) {
+      const v = parseAmount(r[iAmt]);
+      if (v !== null) amount = purchasesPositive ? v : -v;
+    } else if (iDeb >= 0 || iCred >= 0) {
+      const d = parseAmount(r[iDeb]) || 0, c = parseAmount(r[iCred]) || 0;
+      if (r[iDeb]?.trim() || r[iCred]?.trim()) amount = Math.abs(d) - Math.abs(c);
+    }
+    if (date && description && amount !== null) rows.push({ date, description, amount: Math.round(amount * 100) / 100 });
+    else bad.push(r);
+  }
+  return { rows, bad };
+}
+
+function renderCsvPreview() {
+  const box = $('#csv-preview');
+  const f = $('#csv-form');
+  const { rows, bad } = csvRows();
+  box.replaceChildren();
+  $('#csv-import').disabled = !rows.length;
+  if (!rows.length) {
+    box.appendChild(el('p', { class: 'form-error' }, 'No usable rows yet. Check which columns hold the date, description and amount.'));
+    return;
+  }
+  const dates = rows.map((r) => r.date).sort();
+  const out = rows.filter((r) => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+  const inn = rows.filter((r) => r.amount < 0).reduce((s, r) => s - r.amount, 0);
+  box.appendChild(el('p', { class: 'preview-count' }, `${rows.length.toLocaleString()} transactions, ${shortDate(dates[0])} – ${shortDate(dates[dates.length - 1])}`));
+  box.appendChild(el('p', { class: 'hint muted' }, `${money(out)} out, ${money(inn)} in${bad.length ? `. ${bad.length} row${bad.length === 1 ? '' : 's'} skipped (no date or amount)` : ''}. Already-imported rows are skipped automatically.`));
+  const ul = el('ul', { class: 'preview-list' });
+  for (const r of rows.slice(0, 6)) {
+    const li = el('li');
+    li.append(el('span', { class: 'muted' }, shortDate(r.date)), el('span', { class: 'pv-name' }, r.description), el('span'), el('span', { class: `num ${r.amount > 0 ? 'neg' : 'pos'}` }, `${r.amount > 0 ? '−' : '+'}${money(Math.abs(r.amount))}`));
+    ul.appendChild(li);
+  }
+  box.appendChild(ul);
+  f.amount.closest('.field').classList.toggle('dim', !f.amount.value);
+}
+
+$('#csv-form').file.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const f = $('#csv-form');
+  $('#csv-error').hidden = true;
+  let parsed;
+  try { parsed = parseCsv(await file.text()); } catch { parsed = null; }
+  if (!parsed || !parsed.data.length) {
+    const box = $('#csv-error');
+    box.textContent = 'That file doesn’t look like a CSV with transactions.';
+    box.hidden = false;
+    return;
+  }
+  csvState.parsed = parsed;
+  const opts = '<option value="">—</option>' + parsed.header.map((h) => `<option value="${esc(h)}">${esc(h)}</option>`).join('');
+  for (const n of ['date', 'description', 'amount', 'debit', 'credit']) f[n].innerHTML = opts;
+  // Reuse what worked last time for this account, if the columns are the same.
+  const a = csvAccount();
+  const saved = a?.column_map && ['date', 'description'].every((k) => parsed.header.includes(a.column_map[k])) ? a.column_map : null;
+  const map = saved || guessColumns(parsed.header);
+  for (const n of ['date', 'description', 'amount', 'debit', 'credit']) f[n].value = map[n] && parsed.header.includes(map[n]) ? map[n] : '';
+  if (f.amount.value) { f.debit.value = ''; f.credit.value = ''; }
+  // Sign: remembered, else cards usually list purchases as positive and bank accounts as negative.
+  let sign = saved?.sign;
+  if (!sign && f.amount.value) {
+    const i = parsed.header.indexOf(f.amount.value);
+    const vals = parsed.data.map((r) => parseAmount(r[i])).filter((v) => v !== null);
+    const positives = vals.filter((v) => v > 0).length;
+    sign = positives >= vals.length / 2 ? (a?.type === 'credit' ? 'purchases-positive' : 'purchases-negative') : (a?.type === 'credit' ? 'purchases-negative' : 'purchases-positive');
+  }
+  f.sign.value = sign || 'purchases-positive';
+  $('#csv-mapping').hidden = false;
+  renderCsvPreview();
+});
+$('#csv-mapping').addEventListener('input', (e) => {
+  const f = $('#csv-form');
+  if (e.target.name === 'amount' && e.target.value) { f.debit.value = ''; f.credit.value = ''; }
+  if ((e.target.name === 'debit' || e.target.name === 'credit') && e.target.value) f.amount.value = '';
+  renderCsvPreview();
+});
+$('#csv-cancel').addEventListener('click', () => $('#csv-dialog').close());
+$('#csv-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const f = $('#csv-form');
+  const { rows } = csvRows();
+  const column_map = { date: f.date.value, description: f.description.value, amount: f.amount.value, debit: f.debit.value, credit: f.credit.value, sign: f.sign.value };
+  const btn = $('#csv-import');
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/manual-accounts/${encodeURIComponent(csvState.accountId)}/import`, { method: 'POST', body: { rows, column_map, balance: f.balance.value } });
+    $('#csv-dialog').close();
+    setStatus(`Imported ${r.added.toLocaleString()} new transaction${r.added === 1 ? '' : 's'}${r.already ? ` (${r.already.toLocaleString()} already there)` : ''}`);
+    await refreshAll();
+  } catch (err) {
+    const box = $('#csv-error');
+    box.textContent = err.message;
+    box.hidden = false;
+    btn.disabled = false;
+  }
+});
+
 // ----------------------------------------------------------------- Router --
 const VIEWS = { overview: loadOverview, transactions: loadTransactions, budgets: loadBudgets, trends: loadTrends, rules: loadRulesView };
 
@@ -1029,10 +1313,14 @@ $('#next-btn').addEventListener('click', () => { state.offset += PAGE_SIZE; load
 $('#restore-alerts').addEventListener('click', () => { prefs.set('dismissed_alerts', []); loadOverview(); });
 
 $('#accounts').addEventListener('click', async (e) => {
+  if (e.target.closest('a[target=_blank]')) return; // login link: just open it
+  const csv = e.target.closest('[data-csv]');
+  if (csv) { openCsvDialog(csv.dataset.csv); return; }
   const rename = e.target.closest('[data-rename]');
   if (rename) {
     e.stopPropagation();
     const a = state.accounts.find((x) => x.account_id === rename.dataset.rename);
+    if (a?.manual) { openManualDialog(a); return; }
     const name = prompt('Account name (leave empty to use the bank’s name):', a?.nickname || a?.display_name || '');
     if (name === null) return;
     await api(`/api/accounts/${encodeURIComponent(rename.dataset.rename)}`, { method: 'PATCH', body: { nickname: name } });

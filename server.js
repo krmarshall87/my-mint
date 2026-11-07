@@ -192,6 +192,7 @@ function syncAll() {
   syncInFlight ||= (async () => {
     const results = [];
     for (const item of await items.list()) {
+      if (isManualItem(item)) continue; // filled from CSV files, not Plaid
       try {
         results.push({ item_id: item.item_id, ...(await syncItem(item)) });
       } catch (err) {
@@ -259,16 +260,18 @@ app.post('/api/sync', async (_req, res) => {
 });
 
 app.get('/api/items', async (_req, res) => {
-  res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => rest));
+  res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => ({ ...rest, manual: isManualItem(rest) })));
 });
 
 app.delete('/api/items/:id', async (req, res) => {
   const item = await items.get(req.params.id);
   if (!item) return res.status(404).json({ error_message: 'Unknown item' });
-  try {
-    await plaid.itemRemove({ access_token: item.access_token });
-  } catch (err) {
-    console.error('item remove', plaidError(err));
+  if (!isManualItem(item)) {
+    try {
+      await plaid.itemRemove({ access_token: item.access_token });
+    } catch (err) {
+      console.error('item remove', plaidError(err));
+    }
   }
   await store.deleteItem(item.item_id);
   bumpData();
@@ -291,7 +294,32 @@ function displayName(a) {
   if (GENERIC_NAME.test(name)) return `${a.institution_name ? `${a.institution_name} ` : ''}${titleCase(name)}`;
   return shouting ? titleCase(name) : name;
 }
-const listAccounts = async () => (await store.listAccounts()).map((a) => ({ ...a, display_name: displayName(a) }));
+// Manual accounts: added by you and filled from CSV files, for cards and
+// accounts Plaid can't connect. Each has its own item (institution_id 'manual')
+// so removing it works like removing a bank.
+const MANUAL = 'manual';
+const isManualItem = (item) => item?.institution_id === MANUAL;
+const STALE_DAYS = () => Number(process.env.MANUAL_STALE_DAYS || 30);
+const daysSince = (ts) => (ts ? Math.floor((Date.now() - new Date(ts).getTime()) / 86400000) : null);
+
+async function listAccounts() {
+  const [accounts, manual] = await Promise.all([store.listAccounts(), store.listManualAccounts()]);
+  const meta = new Map(manual.map((m) => [m.account_id, m]));
+  return accounts.map((a) => {
+    const m = meta.get(a.account_id);
+    const extra = m
+      ? {
+          manual: true,
+          login_url: m.login_url,
+          column_map: m.column_map,
+          last_imported_at: m.last_imported_at,
+          days_since_import: daysSince(m.last_imported_at),
+          stale: m.last_imported_at === null || daysSince(m.last_imported_at) > STALE_DAYS(),
+        }
+      : { manual: false };
+    return { ...a, ...extra, display_name: displayName(a) };
+  });
+}
 
 app.get('/api/accounts', async (_req, res) => {
   res.json(await listAccounts());
@@ -305,6 +333,102 @@ app.patch('/api/accounts/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ------------------------------------------------------- manual accounts --
+const MANUAL_TYPES = ['credit', 'depository', 'loan', 'investment', 'other'];
+function cleanLoginUrl(v) {
+  if (v === undefined || v === null || v === '') return [null, null];
+  try {
+    const u = new URL(String(v).trim());
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return [null, 'The login page must start with https://'];
+    return [u.toString().slice(0, 500), null];
+  } catch { return [null, 'The login page isn’t a valid web address'] }
+}
+const cleanText = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+
+async function manualAccount(accountId) {
+  const a = (await listAccounts()).find((x) => x.account_id === accountId);
+  return a?.manual ? a : null;
+}
+
+// Write the account row (name, type, balance) through the normal sync path.
+async function writeManualAccount(itemId, a, txns = []) {
+  await store.applySync(itemId, {
+    accounts: [{ account_id: a.account_id, name: a.name, official_name: null, mask: a.mask || null, type: a.type, subtype: null, balances: { current: a.current_balance ?? null, iso_currency_code: 'USD' } }],
+    added: txns, modified: [], removed: [], cursor: null,
+  });
+}
+
+app.post('/api/manual-accounts', async (req, res) => {
+  const b = req.body || {};
+  const name = cleanText(b.name, 60);
+  if (!name) return res.status(400).json({ error_message: 'Give the account a name, e.g. Verizon Visa' });
+  const type = MANUAL_TYPES.includes(b.type) ? b.type : 'credit';
+  const [login_url, urlError] = cleanLoginUrl(b.login_url);
+  if (urlError) return res.status(400).json({ error_message: urlError });
+  const balance = b.balance === '' || b.balance == null ? null : Number(b.balance);
+  if (balance !== null && !Number.isFinite(balance)) return res.status(400).json({ error_message: 'The balance must be a number' });
+  const item_id = `manual-${crypto.randomUUID()}`;
+  const account = { account_id: `manual-${crypto.randomUUID()}`, name, mask: cleanText(b.mask, 4) || null, type, current_balance: balance };
+  await items.save({ item_id, access_token: MANUAL, institution_id: MANUAL, institution_name: cleanText(b.institution, 60) || name });
+  await writeManualAccount(item_id, account);
+  await store.saveManualAccount({ account_id: account.account_id, item_id, login_url, column_map: null, last_imported_at: null });
+  bumpData();
+  res.json(await manualAccount(account.account_id));
+});
+
+app.patch('/api/manual-accounts/:id', async (req, res) => {
+  const a = await manualAccount(req.params.id);
+  if (!a) return res.status(404).json({ error_message: 'Unknown manual account' });
+  const b = req.body || {};
+  const name = b.name === undefined ? a.name : cleanText(b.name, 60);
+  if (!name) return res.status(400).json({ error_message: 'The account needs a name' });
+  const [login_url, urlError] = b.login_url === undefined ? [a.login_url, null] : cleanLoginUrl(b.login_url);
+  if (urlError) return res.status(400).json({ error_message: urlError });
+  const type = MANUAL_TYPES.includes(b.type) ? b.type : a.type;
+  const mask = b.mask === undefined ? a.mask : cleanText(b.mask, 4) || null;
+  await writeManualAccount(a.item_id, { ...a, name, type, mask });
+  if (b.institution !== undefined) {
+    const item = await items.get(a.item_id);
+    await items.save({ ...item, institution_name: cleanText(b.institution, 60) || name });
+  }
+  await store.saveManualAccount({ account_id: a.account_id, item_id: a.item_id, login_url, column_map: a.column_map, last_imported_at: a.last_imported_at });
+  bumpData();
+  res.json(await manualAccount(a.account_id));
+});
+
+// Import rows parsed from a CSV in the browser: [{ date, description, amount }],
+// amount in Plaid's sign (positive = money out). Ids are derived from the row,
+// so importing the same or an overlapping file never duplicates anything.
+const MAX_IMPORT_ROWS = 20000;
+app.post('/api/manual-accounts/:id/import', async (req, res) => {
+  const a = await manualAccount(req.params.id);
+  if (!a) return res.status(404).json({ error_message: 'Unknown manual account' });
+  const rows = Array.isArray(req.body?.rows) ? req.body.rows : null;
+  if (!rows || !rows.length) return res.status(400).json({ error_message: 'No transactions to import' });
+  if (rows.length > MAX_IMPORT_ROWS) return res.status(400).json({ error_message: `At most ${MAX_IMPORT_ROWS} rows per import` });
+  const seen = new Map();
+  const txns = [];
+  for (const [i, r] of rows.entries()) {
+    const description = cleanText(r?.description, 200);
+    const amount = Number(r?.amount);
+    if (!isDate(r?.date) || !description || !Number.isFinite(amount)) return res.status(400).json({ error_message: `Row ${i + 1} is missing a date, description or amount` });
+    const base = `${a.account_id}|${r.date}|${amount.toFixed(2)}|${normalizeText(description)}`;
+    const n = (seen.get(base) || 0) + 1; // identical charges on the same day stay separate
+    seen.set(base, n);
+    const id = `m_${crypto.createHash('sha256').update(`${base}|${n}`).digest('hex').slice(0, 32)}`;
+    txns.push({ transaction_id: id, account_id: a.account_id, date: r.date, name: description, merchant_name: null, amount: round2(amount), iso_currency_code: 'USD', pending: false, personal_finance_category: null });
+  }
+  const existing = new Set((await categorizedTransactions()).map((t) => t.transaction_id));
+  const added = txns.filter((t) => !existing.has(t.transaction_id)).length;
+  const balance = req.body.balance === '' || req.body.balance == null ? a.current_balance : Number(req.body.balance);
+  await writeManualAccount(a.item_id, { ...a, current_balance: Number.isFinite(balance) ? balance : a.current_balance }, txns);
+  const column_map = req.body.column_map && typeof req.body.column_map === 'object' ? req.body.column_map : a.column_map;
+  await store.saveManualAccount({ account_id: a.account_id, item_id: a.item_id, login_url: a.login_url, column_map, last_imported_at: new Date().toISOString() });
+  bumpData();
+  const dates = txns.map((t) => t.date).sort();
+  res.json({ added, already: txns.length - added, total: txns.length, start: dates[0], end: dates[dates.length - 1] });
+});
+
 // ------------------------------------------------------------ categories --
 // Categories follow the Mint-style tree in categories.js. Plaid's category is
 // the starting point (mapped onto the tree). On top of it, in priority order:
@@ -314,6 +438,7 @@ app.patch('/api/accounts/:id', async (req, res) => {
 const merchantText = (t) => `${t.merchant_name || ''} ${t.name || ''}`.toLowerCase().replace(/\s+/g, ' ').trim();
 const merchantKey = (t) =>
   (t.merchant_name || t.name || '').toLowerCase().split('*')[0].replace(/[^a-z&' ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const CARD_PAYMENT = /\b(payment|pymt|autopay|thank you)\b/i;
 const DEFAULT_CATEGORIES = [
   [/\binstacart\b/, 'Groceries'],
   [/\b(doordash|grubhub|uber ?eats)\b/, 'Restaurants'],
@@ -385,6 +510,9 @@ async function categorizedTransactions() {
       category = t.amount < 0 ? 'Loan Payment Received' : 'Hide from Budgets & Trends';
       source = 'auto';
     }
+    // A payment arriving on a card you import from CSV (no Plaid category):
+    // the purchases already count, so the payment doesn't.
+    else if (!t.category && accountType.get(t.account_id) === 'credit' && t.amount < 0 && CARD_PAYMENT.test(text)) { category = 'Credit Card Payment'; source = 'auto'; }
     else if (rule?.category) { category = rule.category; source = 'rule'; }
     else if (category === UNCATEGORIZED) {
       const guess = usual.get(merchantKey(t)) || DEFAULT_CATEGORIES.find(([re]) => re.test(text))?.[1];
@@ -757,6 +885,7 @@ const pretty = (c) => (c === 'OTHER' ? 'Other' : c || UNCATEGORIZED);
 const usd = (n) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
 const LARGE_PURCHASE = () => Number(process.env.ALERT_LARGE_AMOUNT || 500);
 const MAX_ALERTS = 12;
+const acctNameOf = (a) => `${a.display_name}${a.mask ? ` ••${a.mask}` : ''}`;
 
 app.get('/api/alerts', async (_req, res) => {
   const today = isoDate(new Date());
@@ -793,12 +922,17 @@ app.get('/api/alerts', async (_req, res) => {
     }
   }
 
+  // Manual accounts that haven't had a CSV import in a while.
+  for (const a of (await listAccounts()).filter((x) => x.manual && x.stale)) {
+    const when = a.last_imported_at ? `hasn't been updated in ${a.days_since_import} days` : 'has never been imported';
+    add(`stale:${a.account_id}:${a.last_imported_at || 'never'}`, 'warning', today, b(acctNameOf(a)), ` ${when}. `,
+      ...(a.login_url ? [{ t: 'Log in', href: a.login_url }, ', download your transactions, then '] : ['Download your transactions, then ']),
+      { t: 'import the CSV', action: 'import', account_id: a.account_id });
+  }
+
   // Large purchases and income in the last week.
   const accounts = new Map((await listAccounts()).map((a) => [a.account_id, a]));
-  const acctName = (id) => {
-    const a = accounts.get(id);
-    return a ? `${a.display_name}${a.mask ? ` ••${a.mask}` : ''}` : 'your account';
-  };
+  const acctName = (id) => (accounts.has(id) ? acctNameOf(accounts.get(id)) : 'your account');
   for (const t of await allTransactions({ start: daysAgo(6), end: today })) {
     if (t.excluded) continue;
     if (isIncome(t.category) && t.amount < 0) {
