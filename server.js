@@ -320,7 +320,7 @@ app.get('/api/items', async (_req, res) => {
   res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => ({
     ...rest,
     manual: isManualItem(rest),
-    ...(rest.error === CONSENT_NEEDED ? { consent_for: consentFor(rest.item_id) } : {}),
+    ...(rest.error === CONSENT_NEEDED ? { consent_for: consentFor(rest) } : {}),
     expires_in_days: expiresInDays(rest),
   })));
 });
@@ -392,6 +392,7 @@ app.patch('/api/accounts/:id', async (req, res) => {
   const accounts = await store.listAccounts();
   if (!accounts.some((a) => a.account_id === req.params.id)) return res.status(404).json({ error_message: 'Unknown account' });
   await store.setNickname(req.params.id, nickname || null);
+  bumpData(); // account names appear in cached results (bills)
   res.json({ ok: true });
 });
 
@@ -946,7 +947,20 @@ app.get('/api/budget-summary', async (req, res) => {
 // Holdings and investment activity come from Plaid's Investments product, and
 // only for banks that actually have investment accounts (it's billed per bank).
 const INVESTMENT_TYPES = new Set(['investment', 'brokerage']);
-const investmentStatus = new Map(); // item_id -> null (ok) or a Plaid error code
+// Each bank's result for the optional products, saved with the bank
+// (items.product_status) so a restart doesn't forget it: null = working,
+// otherwise Plaid's error code. Missing = not tried yet.
+const parseStatus = (item) => {
+  const v = item?.product_status;
+  if (!v) return {};
+  if (typeof v === 'object') return v;
+  try { return JSON.parse(v); } catch { return {}; }
+};
+// A product's status, or the saved consent error when it hasn't been tried since.
+const statusOf = (item, product) => {
+  const st = parseStatus(item);
+  return product in st ? st[product] : item.error === CONSENT_NEEDED ? CONSENT_NEEDED : null;
+};
 const CONSENT_NEEDED = 'ADDITIONAL_CONSENT_REQUIRED';
 
 async function syncInvestments(item, accounts, cursor) {
@@ -985,21 +999,21 @@ async function syncInvestments(item, accounts, cursor) {
       offset += data.investment_transactions.length;
     }
     if (txns.length) await store.applySync(item.item_id, { accounts: [], added: txns, modified: [], removed: [], cursor });
-    investmentStatus.set(item.item_id, null);
+    await store.setItemProductStatus(item.item_id, 'investments', null);
     bumpData();
     return { holdings: h.holdings.length, activity: txns.length };
   } catch (err) {
-    return productError(item, investmentStatus, 'investments', err);
+    return productError(item, 'investments', err);
   }
 }
 
 // Optional products (Investments, Liabilities) fail on their own without
 // breaking the sync. The bank may want your OK first: "reconnect" asks for it.
-async function productError(item, statusMap, label, err) {
+async function productError(item, product, err) {
   const code = err.response?.data?.error_code || err.message;
-  statusMap.set(item.item_id, code);
+  await store.setItemProductStatus(item.item_id, product, code);
   if (code === CONSENT_NEEDED) await store.setItemError(item.item_id, CONSENT_NEEDED);
-  else console.error(label, item.institution_name, code);
+  else console.error(product, item.institution_name, code);
   return { error: code };
 }
 
@@ -1011,8 +1025,9 @@ function expiresInDays(item) {
 }
 
 // What a bank still needs your OK to share, in a few words.
-function consentFor(itemId) {
-  const inv = investmentStatus.get(itemId) === CONSENT_NEEDED, card = liabilityStatus.get(itemId) === CONSENT_NEEDED;
+function consentFor(item) {
+  const st = parseStatus(item);
+  const inv = st.investments === CONSENT_NEEDED, card = st.liabilities === CONSENT_NEEDED;
   if (inv && !card) return 'investment details';
   if (card && !inv) return 'card statements';
   return 'card statements and investments';
@@ -1021,7 +1036,6 @@ function consentFor(itemId) {
 // ---------------------------------------------------------- liabilities --
 // Credit card statements (statement balance, due date, minimum, APRs) from
 // Plaid's Liabilities product, only for banks with credit cards.
-const liabilityStatus = new Map(); // item_id -> null (ok) or a Plaid error code
 
 async function syncLiabilities(item, accounts) {
   if (!accounts.some((a) => a.type === 'credit' || a.type === 'loan')) return null;
@@ -1063,10 +1077,10 @@ async function syncLiabilities(item, accounts) {
       aprs: (c.aprs || []).map((a) => ({ type: a.apr_type, apr: a.apr_percentage, balance: a.balance_subject_to_apr ?? null, interest: a.interest_charge_amount ?? null })),
     }));
     await store.replaceCardStatements(item.item_id, [...rows, ...loans]);
-    liabilityStatus.set(item.item_id, null);
+    await store.setItemProductStatus(item.item_id, 'liabilities', null);
     return { statements: rows.length, loans: loans.length };
   } catch (err) {
-    return productError(item, liabilityStatus, 'liabilities', err);
+    return productError(item, 'liabilities', err);
   }
 }
 
@@ -1088,7 +1102,7 @@ app.get('/api/investments', async (_req, res) => {
   });
   const status = itemList
     .filter((i) => invAccounts.some((a) => a.item_id === i.item_id))
-    .map((i) => ({ item_id: i.item_id, institution: i.institution_name, status: investmentStatus.has(i.item_id) ? investmentStatus.get(i.item_id) : i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null }));
+    .map((i) => ({ item_id: i.item_id, institution: i.institution_name, status: statusOf(i, 'investments') }));
   res.json({
     accounts: out,
     value: round2(value),
@@ -1258,7 +1272,21 @@ function amountClusters(txns) {
   return clusters.map((c) => c.sort((a, b) => a.date.localeCompare(b.date)));
 }
 
+// Detection reads every transaction, and Overview, Bills, alerts and the card
+// plan all ask for it, so keep the answer until the data (or the day) changes.
+let recurringCache = null;
 async function detectRecurring() {
+  const key = `${dataVersion}|${isoDate(new Date())}`;
+  if (recurringCache?.key !== key) recurringCache = { key, bills: detectRecurringNow() };
+  try {
+    return structuredClone(await recurringCache.bills);
+  } catch (err) {
+    recurringCache = null; // don't keep a failure
+    throw err;
+  }
+}
+
+async function detectRecurringNow() {
   const rows = await categorizedTransactions();
   const accounts = new Map((await listAccounts()).map((a) => [a.account_id, a]));
   const today = isoDate(new Date());
@@ -1675,7 +1703,7 @@ async function cardPlan({ buffer }) {
     invest_threshold: INVEST_THRESHOLD(),
     status: (await store.listItems())
       .filter((i) => accounts.some((a) => a.item_id === i.item_id && a.type === 'credit') && !accounts.some((a) => a.item_id === i.item_id && a.manual))
-      .map((i) => ({ institution: i.institution_name, status: liabilityStatus.has(i.item_id) ? liabilityStatus.get(i.item_id) : i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null })),
+      .map((i) => ({ institution: i.institution_name, status: statusOf(i, 'liabilities') })),
   };
 }
 
@@ -1775,7 +1803,7 @@ app.get('/api/loans', async (_req, res) => {
   });
   const status = itemList
     .filter((i) => accounts.some((a) => a.item_id === i.item_id && a.type === 'loan' && !a.manual))
-    .map((i) => ({ institution: i.institution_name, status: liabilityStatus.has(i.item_id) ? liabilityStatus.get(i.item_id) : i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null }));
+    .map((i) => ({ institution: i.institution_name, status: statusOf(i, 'liabilities') }));
   res.json({ today, loans, status });
 });
 
@@ -1821,7 +1849,7 @@ app.get('/api/alerts', async (_req, res) => {
   const allItems = await store.listItems();
   const consent = allItems.filter((i) => i.error === CONSENT_NEEDED);
   if (consent.length) {
-    const what = [...new Set(consent.map((i) => consentFor(i.item_id)))];
+    const what = [...new Set(consent.map((i) => consentFor(i)))];
     const label = what.length === 1 ? what[0] : 'more details';
     add(`consent:${consent.map((i) => i.item_id).sort().join(',')}`, 'warning', today,
       b(consent.map((i) => i.institution_name).join(', ')), ` ${consent.length > 1 ? 'need' : 'needs'} your OK to share ${label}. Click “Share” next to ${consent.length > 1 ? 'each bank' : 'it'} in the accounts list.`);
