@@ -12,7 +12,7 @@ A small personal finance app that links your bank accounts through [Plaid](https
 - **Manual accounts:** for cards Plaid can't connect (a Verizon Visa, a store card), add a manual account with its login page and import the CSV your card's website lets you download. Columns are guessed and remembered per account, there's a preview, and re-importing an overlapping file never duplicates. The sidebar shows when each was last updated and links to its login page in a new tab; after 30 days without an import, you get a reminder (`MANUAL_STALE_DAYS` to change it).
 - **Account names:** generic bank names like "CREDIT CARD" are replaced with the card's official name or "<Bank> Credit Card". Click ✎ next to an account to rename it.
 - **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
-- **Trends:** spending by category as a pie or bars, cash flow by month, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
+- **Trends:** spending by category as a pie or bars, net income by month, net worth, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
 
 Income is the Income categories (Paycheck, Bonus, …) plus Dividend & Cap Gains. Other money in is a refund and reduces spending. Transfers, credit-card payments, investment trades and anything in *Hide from Budgets & Trends* are left out of both. Mortgage and loan payments are bills (Bills & Utilities) and count as spending; the matching activity on the loan account itself is left out automatically so nothing is counted twice.
 
