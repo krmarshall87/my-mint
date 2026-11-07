@@ -1648,24 +1648,37 @@ const r2 = (n) => Math.round(n * 100) / 100;
 const SOURCE = { bank: 'from your bank', you: 'yours', calculated: 'calculated', payments: 'from your payments' };
 
 // Month-by-month schedule. Extra principal goes on from `extraFrom`; lumps are
-// one-time payments in a given month. Stops when paid off (or after 60 years).
-function amortize({ balance, rate, payment, start, extra = 0, extraFrom = start, lumps = [] }) {
+// one-time payments in a given month. A one-time payment normally shortens the
+// loan; with `recast` the lender re-amortizes instead, so the payoff date stays
+// and the monthly payment drops. Stops when paid off (or after 60 years).
+function amortize({ balance, rate, payment, start, extra = 0, extraFrom = start, lumps = [], recast = false }) {
   const r = rate / 1200;
   const lumpBy = new Map();
   for (const l of lumps) if (l.amount > 0 && isYm(l.month)) lumpBy.set(l.month, (lumpBy.get(l.month) || 0) + l.amount);
+  const term = recast && lumpBy.size ? amortize({ balance, rate, payment, start }).months : null;
   const rows = [];
-  let bal = balance, ym = start, interestTotal = 0;
+  let bal = balance, ym = start, interestTotal = 0, principalTotal = 0, pay = payment;
   for (let i = 0; bal > 0.005 && i < 720; i++) {
+    const startBal = bal;
     const interest = r2(bal * r);
-    const principal = Math.min(bal, payment - interest);
-    let ext = (ym >= extraFrom ? extra : 0) + (lumpBy.get(ym) || 0);
+    const principal = Math.min(bal, pay - interest);
+    const lump = lumpBy.get(ym) || 0;
+    let ext = (ym >= extraFrom ? extra : 0) + lump;
     ext = Math.max(0, Math.min(ext, bal - principal));
     bal = r2(bal - principal - ext);
     interestTotal += interest;
-    rows.push({ month: ym, interest, principal: r2(principal), extra: r2(ext), payment: r2(interest + principal + ext), balance: Math.max(0, bal) });
+    principalTotal += principal + ext;
+    rows.push({ n: i + 1, month: ym, start: startBal, interest, principal: r2(principal), extra: r2(ext), payment: r2(interest + principal + ext),
+      balance: Math.max(0, bal), principal_to_date: r2(principalTotal), interest_to_date: r2(interestTotal), regular: r2(pay) });
+    // Recast: same payoff date, smaller payment from next month on.
+    if (term && lump && bal > 0.005) {
+      const left = term - (i + 1);
+      // Rounded up to the cent, so rounding never adds a stray last month.
+      pay = left > 0 ? Math.ceil((r ? (bal * r) / (1 - (1 + r) ** -left) : bal / left) * 100 - 1e-6) / 100 : pay;
+    }
     ym = ymAdd(ym, 1);
   }
-  return { rows, interest: r2(interestTotal), months: rows.length, payoff: rows.length ? rows[rows.length - 1].month : start, never: bal > 0.005 };
+  return { rows, interest: r2(interestTotal), months: rows.length, payoff: rows.length ? rows[rows.length - 1].month : start, never: bal > 0.005, payment: pay };
 }
 
 let loansData = null;
@@ -1761,12 +1774,36 @@ function loanPanel(loan, today) {
   const [l2, fromIn] = monthField('Starting', saved.from);
   const [l3, lumpIn] = moneyField('One-time payment', saved.lump);
   const [l4, lumpAtIn] = monthField('In', saved.lumpAt);
+  const l5 = el('label', { class: 'field' }, 'One-time payment should');
+  const modeIn = el('select');
+  modeIn.append(el('option', { value: 'shorten' }, 'Shorten the loan'), el('option', { value: 'recast' }, 'Lower my payment (recast)'));
+  modeIn.value = saved.mode === 'recast' ? 'recast' : 'shorten';
+  modeIn.title = 'Shorten: the payment stays the same, so the loan ends sooner. Recast: the lender re-spreads the balance over the same payoff date, so the monthly payment drops (lenders often charge a small fee and require a minimum amount).';
+  l5.appendChild(modeIn);
   const reset = el('button', { type: 'button', class: 'link-btn' }, 'Reset');
-  row.append(l1, l2, l3, l4, reset);
+  row.append(l1, l2, l3, l4, l5, reset);
   box.appendChild(row);
   const results = el('div', { class: 'summary whatif-results' });
   box.appendChild(results);
   body.appendChild(box);
+
+  // Several scenarios side by side, like a spreadsheet of what-ifs.
+  const cmp = el('div', { class: 'whatif compare' });
+  cmp.appendChild(el('h3', {}, 'Compare'));
+  const cmpInputs = el('div', { class: 'whatif-inputs' });
+  const listField = (label, value, hint) => {
+    const lab = el('label', { class: 'field wide' }, label);
+    const input = el('input', { type: 'text', inputmode: 'decimal', value, 'aria-describedby': '' });
+    lab.append(input, el('span', { class: 'hint' }, hint));
+    return [lab, input];
+  };
+  const [c1, extrasIn] = listField('Extra each month', saved.cmpExtras ?? '200, 250, 300, 350, 400, 500', 'From the “Starting” month above, separated by commas');
+  const [c2, lumpsIn] = listField('One-time payments', saved.cmpLumps ?? '10000, 20000', 'In the “In” month above, as chosen above (shorten or recast)');
+  cmpInputs.append(c1, c2);
+  cmp.appendChild(cmpInputs);
+  const cmpTable = el('div', { class: 'table-wrap' });
+  cmp.appendChild(cmpTable);
+  body.appendChild(cmp);
 
   const chartCard = el('div', { class: 'chart-card loan-chart' });
   const chart = el('div', { class: 'chart', 'data-label': `${loan.name} balance over time` });
@@ -1785,17 +1822,24 @@ function loanPanel(loan, today) {
   const update = () => {
     const extra = Math.max(0, Number(extraIn.value) || 0), lump = Math.max(0, Number(lumpIn.value) || 0);
     const from = isYm(fromIn.value) ? fromIn.value : nextDue, lumpAt = isYm(lumpAtIn.value) ? lumpAtIn.value : nextDue;
-    prefs.set(key, { extra: extraIn.value, from, lump: lumpIn.value, lumpAt });
-    const what = extra || lump ? amortize({ balance: loan.balance, rate: loan.rate.value, payment: loan.payment.value, start: nextDue, extra, extraFrom: from, lumps: [{ month: lumpAt, amount: lump }] }) : null;
+    const recast = modeIn.value === 'recast';
+    prefs.set(key, { extra: extraIn.value, from, lump: lumpIn.value, lumpAt, mode: modeIn.value, cmpExtras: extrasIn.value, cmpLumps: lumpsIn.value });
+    const run = (x, l) => amortize({ balance: loan.balance, rate: loan.rate.value, payment: loan.payment.value, start: nextDue, extra: x, extraFrom: from, lumps: [{ month: lumpAt, amount: l }], recast });
+    const what = extra || lump ? run(extra, lump) : null;
     const tile = (label, value, note) => { const d = el('div'); d.append(el('span', {}, label), el('strong', {}, value)); if (note) d.append(el('small', { class: 'muted' }, note)); return d; };
     const cut = what ? base.months - what.months : 0;
     const yrs = (mo) => (mo >= 12 ? `${Math.floor(mo / 12)} yr${mo >= 24 ? 's' : ''}${mo % 12 ? ` ${mo % 12} mo` : ''}` : `${mo} mo`);
     results.replaceChildren(
-      tile('Paid off', ymLabel((what || base).payoff), what ? `instead of ${ymLabel(base.payoff)}` : `${yrs(base.months)} from now`),
-      tile('Months cut', what ? `${cut}` : '0', what && cut ? yrs(cut) + ' sooner' : 'add a payment above'),
+      tile('Paid off', ymLabel((what || base).payoff), what && cut ? `instead of ${ymLabel(base.payoff)}` : `${yrs(base.months)} from now`),
+      tile('Months cut', what ? `${cut}` : '0', what && cut ? yrs(cut) + ' sooner' : what ? 'same payoff date: the payment drops instead' : 'add a payment above'),
       tile('Interest saved', money(what ? base.interest - what.interest : 0), what ? `${money(what.interest)} left to pay` : null),
-      tile('Interest left to pay', money(base.interest), 'on the current schedule'),
+      recast && what && lump ? tile('New payment', `${money(what.payment)}/mo`, `instead of ${money(loan.payment.value)} (principal & interest)`)
+        : tile('Interest left to pay', money(base.interest), 'on the current schedule'),
     );
+    renderCompare(cmpTable, base, [
+      ...parseAmounts(extrasIn.value).map((x) => ({ label: `+${wholeMoney(x)} a month`, sched: run(x, 0), monthly: x })),
+      ...parseAmounts(lumpsIn.value).map((x) => ({ label: `${wholeMoney(x)} once${recast ? ', recast' : ''}`, sched: run(0, x) })),
+    ]);
     // Balance at the end of each month, both schedules.
     const labels = base.rows.map((r) => ymLabel(r.month));
     const series = [{ label: 'Current schedule', color: 'var(--tick)', dashed: !!what, values: base.rows.map((r) => r.balance) }];
@@ -1803,7 +1847,8 @@ function loanPanel(loan, today) {
     Charts.lines(chart, { labels, series, format: wholeMoney });
     renderSchedule(schedTable, what || base, monthlyBox.checked, !!what);
   };
-  for (const i of [extraIn, fromIn, lumpIn, lumpAtIn]) i.addEventListener('input', update);
+  for (const i of [extraIn, fromIn, lumpIn, lumpAtIn, extrasIn, lumpsIn]) i.addEventListener('input', update);
+  modeIn.addEventListener('change', update);
   monthlyBox.addEventListener('change', update);
   reset.addEventListener('click', () => { extraIn.value = ''; lumpIn.value = ''; fromIn.value = nextDue; lumpAtIn.value = nextDue; update(); });
   // Charts need the panel's width, so draw once it's on the page.
@@ -1811,27 +1856,69 @@ function loanPanel(loan, today) {
   return panel;
 }
 
-// The schedule as a table: one row per year, or per month.
-function renderSchedule(container, sched, monthly, withExtra) {
-  let rows = sched.rows;
-  if (!monthly) {
-    const byYear = new Map();
-    for (const r of rows) {
-      const y = r.month.slice(0, 4);
-      const t = byYear.get(y) || { month: y, payment: 0, principal: 0, extra: 0, interest: 0, balance: 0 };
-      t.payment += r.payment; t.principal += r.principal; t.extra += r.extra; t.interest += r.interest; t.balance = r.balance;
-      byYear.set(y, t);
-    }
-    rows = [...byYear.values()];
-  }
+const parseAmounts = (text) => [...new Set(String(text).split(/[,\s]+/).map((x) => Number(x.replace(/[$,]/g, ''))).filter((x) => x > 0 && x < 1e8))].slice(0, 12);
+
+// Scenarios against the current schedule. "vs. above" is the extra months
+// each step buys over the row before it.
+function renderCompare(container, base, scenarios) {
+  let prevCut = 0;
+  const rows = [{ label: 'Current schedule', sched: base, base: true }, ...scenarios].map((r) => {
+    const cut = base.months - r.sched.months;
+    const step = r.monthly ? cut - prevCut : null; // only between extra-each-month rows
+    if (r.monthly) prevCut = cut;
+    return { ...r, cut, step };
+  });
   Charts.table(container, {
     rows,
     columns: [
-      { label: monthly ? 'Month' : 'Year', get: (r) => (monthly ? ymLabel(r.month) : r.month) },
-      { label: 'Paid', num: true, get: (r) => money(r.payment) },
+      { label: 'Scenario', get: (r) => r.label },
+      { label: 'Total interest', num: true, get: (r) => money(r.sched.interest) },
+      { label: 'Interest saved', num: true, get: (r) => (r.base ? '—' : money(base.interest - r.sched.interest)) },
+      { label: 'Months saved', num: true, get: (r) => (r.base ? '—' : String(r.cut)) },
+      { label: 'vs. row above', num: true, get: (r) => (r.step == null ? '' : `${r.step} mo`) },
+      { label: 'Paid off', num: true, get: (r) => ymLabel(r.sched.payoff) },
+      { label: 'Monthly payment', num: true, get: (r) => money(r.sched.payment + (r.monthly || 0)) },
+    ],
+  });
+}
+
+// The schedule as a table: one row per year, or every payment.
+function renderSchedule(container, sched, monthly, withExtra) {
+  if (monthly) {
+    Charts.table(container, {
+      rows: sched.rows,
+      columns: [
+        { label: '#', num: true, get: (r) => String(r.n) },
+        { label: 'Payment date', get: (r) => ymLabel(r.month) },
+        { label: 'Starting balance', num: true, get: (r) => money(r.start) },
+        { label: 'Principal', num: true, get: (r) => money(r.principal) },
+        { label: 'Interest', num: true, get: (r) => money(r.interest) },
+        ...(withExtra ? [{ label: 'Extra', num: true, get: (r) => (r.extra ? money(r.extra) : '—') }] : []),
+        { label: 'Principal to date', num: true, get: (r) => money(r.principal_to_date) },
+        { label: 'Interest to date', num: true, get: (r) => money(r.interest_to_date) },
+      ],
+    });
+    container.querySelector('tbody tr')?.classList.add('next-row');
+    return;
+  }
+  const byYear = new Map();
+  for (const r of sched.rows) {
+    const y = r.month.slice(0, 4);
+    const t = byYear.get(y) || { month: y, start: r.start, payment: 0, principal: 0, extra: 0, interest: 0 };
+    t.payment += r.payment; t.principal += r.principal; t.extra += r.extra; t.interest += r.interest;
+    t.balance = r.balance; t.principal_to_date = r.principal_to_date; t.interest_to_date = r.interest_to_date;
+    byYear.set(y, t);
+  }
+  Charts.table(container, {
+    rows: [...byYear.values()],
+    columns: [
+      { label: 'Year', get: (r) => r.month },
+      { label: 'Starting balance', num: true, get: (r) => money(r.start) },
       { label: 'Principal', num: true, get: (r) => money(r.principal) },
-      ...(withExtra ? [{ label: 'Extra', num: true, get: (r) => (r.extra ? money(r.extra) : '—') }] : []),
       { label: 'Interest', num: true, get: (r) => money(r.interest) },
+      ...(withExtra ? [{ label: 'Extra', num: true, get: (r) => (r.extra ? money(r.extra) : '—') }] : []),
+      { label: 'Principal to date', num: true, get: (r) => money(r.principal_to_date) },
+      { label: 'Interest to date', num: true, get: (r) => money(r.interest_to_date) },
       { label: 'Balance after', num: true, get: (r) => money(r.balance) },
     ],
   });
