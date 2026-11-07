@@ -444,6 +444,54 @@
     container.appendChild(svg);
   }
 
+  // ------------------------------------------------------------ line chart --
+  // Several series over the same x points (e.g. a loan balance with and without
+  // extra payments). series: [{ label, color, dashed, values: [number|null] }]
+  function lines(container, { labels, series, format, height = 220, tickEvery = 12 }) {
+    const card = container.closest('.chart-card');
+    const tip = tooltip(card);
+    container.replaceChildren();
+    const n = labels.length;
+    if (!n) return;
+    const width = Math.max(280, container.clientWidth);
+    const m = { top: 12, right: 12, bottom: 26, left: 58 };
+    const plotW = width - m.left - m.right, plotH = height - m.top - m.bottom;
+    const all = series.flatMap((s) => s.values.filter((v) => v != null));
+    const { max, step } = niceScale(Math.max(1, ...all));
+    const xOf = (i) => m.left + (i / Math.max(1, n - 1)) * plotW;
+    const yOf = (v) => m.top + plotH - (Math.max(0, v) / max) * plotH;
+    const svg = el('svg:svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': container.dataset.label || '' });
+    for (let v = 0; v <= max + 1e-9; v += step) {
+      const y = Math.round(yOf(v)) + 0.5;
+      svg.appendChild(el('svg:line', { x1: m.left, x2: width - m.right, y1: y, y2: y, class: v === 0 ? 'axis-line' : 'grid-line' }));
+      svg.appendChild(el('svg:text', { x: m.left - 8, y: y + 4, 'text-anchor': 'end', class: 'tick' }, compactMoney(v)));
+    }
+    const every = Math.max(tickEvery, Math.ceil(n / Math.max(2, Math.floor(plotW / 60)) / tickEvery) * tickEvery);
+    for (let i = 0; i < n; i += every) svg.appendChild(el('svg:text', { x: xOf(i), y: height - 8, 'text-anchor': 'middle', class: 'tick' }, labels[i]));
+    for (const s of series) {
+      let d = '';
+      s.values.forEach((v, i) => { if (v != null) d += `${d ? 'L' : 'M'}${xOf(i)},${yOf(v)}`; });
+      svg.appendChild(el('svg:path', { d, class: `pace-line${s.dashed ? ' dashed-line' : ''}`, style: `stroke:${s.color}` }));
+    }
+    const cross = el('svg:line', { y1: m.top, y2: m.top + plotH, class: 'crosshair', visibility: 'hidden' });
+    svg.appendChild(cross);
+    const hit = el('svg:rect', { x: m.left, y: m.top, width: plotW, height: plotH, class: 'hit', tabindex: 0, 'aria-label': container.dataset.label || '' });
+    const show = (i, px, py) => {
+      cross.setAttribute('x1', xOf(i)); cross.setAttribute('x2', xOf(i)); cross.setAttribute('visibility', 'visible');
+      tip.show(series.map((s) => ({ color: s.color, value: s.values[i] == null ? 'paid off' : format(s.values[i]), label: s.label })), labels[i], px, py);
+    };
+    hit.addEventListener('pointermove', (e) => {
+      const box = svg.getBoundingClientRect();
+      show(Math.min(n - 1, Math.max(0, Math.round(((e.clientX - box.left - m.left) / plotW) * (n - 1)))), e.clientX, e.clientY);
+    });
+    hit.addEventListener('focus', () => show(0, ...anchorOf(hit)));
+    const hide = () => { cross.setAttribute('visibility', 'hidden'); tip.hide(); };
+    hit.addEventListener('pointerleave', hide);
+    hit.addEventListener('blur', hide);
+    svg.appendChild(hit);
+    container.appendChild(svg);
+  }
+
   // ------------------------------------------------------------ table view --
   // The accessible twin of every chart: same numbers, no hover needed.
   function table(container, { columns: cols, rows }) {
@@ -462,5 +510,5 @@
     container.appendChild(t);
   }
 
-  window.Charts = { columns, bars, donut, meter, table, el, diverging, pace, outlook };
+  window.Charts = { columns, bars, donut, meter, table, el, diverging, pace, outlook, lines };
 })();

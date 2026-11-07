@@ -156,6 +156,7 @@ function manualLine(a) {
   </span>`;
 }
 
+const expiringSoon = (i) => i.expires_in_days != null && i.expires_in_days <= 30;
 const ERROR_TEXT = {
   ITEM_LOGIN_REQUIRED: 'Sign-in expired. Click reconnect.',
 };
@@ -191,9 +192,10 @@ function renderAccounts() {
           <span>${esc(i.institution_name)}${i.manual ? ' <small class="muted">(manual)</small>' : ''}</span>
           ${i.consent_for
             ? `<button class="link-btn consent-btn" data-relink="${esc(i.item_id)}" title="Opens Plaid so this bank can share ${esc(i.consent_for)}. Only needed once.">Share ${esc(i.consent_for)}</button>`
-            : i.error ? `<button class="link-btn" data-relink="${esc(i.item_id)}">reconnect</button>` : ''}
+            : i.error || expiringSoon(i) ? `<button class="link-btn" data-relink="${esc(i.item_id)}">reconnect</button>` : ''}
           <button class="link-btn danger" data-remove="${esc(i.item_id)}">remove</button>
-        </div>${i.error && !i.consent_for ? `<div class="inst-error">${esc(ERROR_TEXT[i.error] || `Connection problem (${i.error}).`)}</div>` : ''}`).join('')}
+        </div>${i.error && !i.consent_for ? `<div class="inst-error">${esc(ERROR_TEXT[i.error] || `Connection problem (${i.error}).`)}</div>`
+          : expiringSoon(i) ? `<div class="inst-error">${i.expires_in_days <= 0 ? 'Connection expired. Click reconnect.' : `Connection expires ${esc(shortDate(i.consent_expires_at.slice(0, 10)))}. Reconnect to renew.`}</div>` : ''}`).join('')}
     </section>` : '');
 
   const net = state.accounts.reduce((s, a) => s + signedBalance(a), 0);
@@ -1378,6 +1380,11 @@ const noteBox = (level, ...parts) => {
   return p;
 };
 const strong = (t) => el('strong', {}, t);
+// Credit utilization: under 10% is great, over 30% starts to hurt a credit score. Always with a label.
+function utilBadge(pct) {
+  const [cls, label] = pct > 30 ? ['util-high', 'over 30%'] : pct <= 10 ? ['util-good', 'low'] : ['util-ok', 'OK'];
+  return el('span', { class: `badge ${cls}` }, label);
+}
 const aprText = (c) => (c.promo ? `${c.promo.apr}% promo` : `${Number(c.apr).toFixed(2)}%`);
 
 async function loadCards() {
@@ -1417,6 +1424,9 @@ async function loadCards() {
     $('#cp-due').textContent = money(t.due);
     $('#cp-pay').textContent = money(t.pay);
     $('#cp-interest').textContent = t.interest ? `~${money(t.interest)}` : money(0);
+    $('#cp-interest-ytd').textContent = money(t.interest_ytd);
+    $('#cp-util').replaceChildren(...(t.utilization == null ? ['—'] : [`${Math.round(t.utilization)}%`, utilBadge(t.utilization)]));
+    $('#cp-util-note').textContent = t.utilization == null ? 'Add credit limits to see this' : `of ${wholeMoney(t.credit_limit)}${t.cards_without_limit ? ` · ${t.cards_without_limit} card${t.cards_without_limit > 1 ? 's' : ''} without a limit` : ''}`;
     for (const id of ['cp-income', 'cp-bills']) $(`#${id}`).previousElementSibling.textContent = `${id === 'cp-income' ? 'Paychecks' : 'Bills'} to ${shortDate(d.through)}`;
 
     renderPlanTable(d);
@@ -1447,6 +1457,12 @@ function renderPlanTable(d) {
       ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since` : ''}${c.source === 'you' ? ' (yours)' : ''}`
       : `Balance ${money(c.balance || 0)} · no statement yet`;
     name.append(el('div', { class: 'sub' }, sub));
+    if (c.credit_limit) {
+      const u = el('div', { class: 'sub' }, `${Math.round(c.utilization)}% of ${wholeMoney(c.credit_limit)} limit`);
+      u.append(utilBadge(c.utilization));
+      if (c.to_30 > 0) u.title = `Paying ${money(c.to_30)} more brings it under 30%`;
+      name.append(u);
+    }
     const owed = el('td', { class: 'num' }, c.remaining == null ? '—' : money(c.remaining));
     const minMet = c.minimum === 0 && c.minimum_payment > 0 && c.remaining > 0;
     const min = el('td', { class: 'num' }, c.minimum == null ? '—' : minMet ? '✓ met' : `${money(c.minimum)}${c.minimum_estimated ? '*' : ''}`);
@@ -1482,10 +1498,12 @@ function renderPlanTable(d) {
     if (c.promo_ending && c.balance > 0) steps.appendChild(el('li', {}, strong(`Pay off all ${money(c.balance)} by ${shortDate(c.promo_ending)}`), el('span', { class: 'sub muted' }, 'when the promo ends, interest may be charged back to the purchase date')));
     plan.appendChild(steps);
 
-    const interest = el('td', { class: 'num' });
+    const interest = el('td', { class: 'num interest-cell' });
     if (c.interest_cost) interest.append(`~${money(c.interest_cost)}`);
     else interest.append(c.remaining > 0 ? '$0' : '—');
     if (c.interest_if_unpaid > c.interest_cost) interest.append(el('div', { class: 'sub muted' }, `saves ~${money(c.interest_if_unpaid - c.interest_cost)}`));
+    if (c.interest_charged != null) interest.append(el('div', { class: 'sub muted' }, `${money(c.interest_charged)} on last statement`));
+    if (c.interest_ytd) interest.append(el('div', { class: 'sub muted' }, `${money(c.interest_ytd)} this year`));
 
     const edit = el('td');
     const btn = el('button', { type: 'button', class: 'link-btn' }, 'Edit');
@@ -1582,6 +1600,7 @@ function openCardDialog(c) {
   const mine = c.mine || {};
   const set = (k, v, ph) => { cardForm[k].value = v ?? ''; cardForm[k].placeholder = ph ?? ''; };
   set('apr', mine.apr, c.apr_assumed ? 'not reported' : String(c.regular_apr ?? c.apr));
+  set('credit_limit', mine.credit_limit, c.credit_limit_source === 'bank' ? String(c.credit_limit) : 'not reported');
   set('promo_apr', mine.promo_apr, '');
   set('promo_end', mine.promo_end);
   set('statement_balance', c.source === 'you' ? c.statement_balance : mine.statement_balance, fromBank ? String(c.statement_balance) : '');
@@ -1594,7 +1613,7 @@ function openCardDialog(c) {
 cardForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = {};
-  for (const k of ['apr', 'promo_apr', 'promo_end', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
+  for (const k of ['credit_limit', 'apr', 'promo_apr', 'promo_end', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
   try {
     await api(`/api/cards/${encodeURIComponent(editingCard.account_id)}`, { method: 'PUT', body });
     $('#card-dialog').close();
@@ -1610,6 +1629,250 @@ $('#card-clear').addEventListener('click', async () => {
   await api(`/api/cards/${encodeURIComponent(editingCard.account_id)}`, { method: 'PUT', body: {} });
   $('#card-dialog').close();
   await loadCards();
+});
+
+
+// ------------------------------------------------------------------ Loans --
+const LOAN_STATUS = {
+  PRODUCTS_NOT_SUPPORTED: 'doesn’t share loan details through Plaid. Click Edit on its loans to add them yourself.',
+  INVALID_PRODUCT: 'can’t share loan details yet: turn on the Liabilities product in your Plaid dashboard, or click Edit to add them yourself.',
+  PRODUCT_NOT_READY: 'is still preparing loan details. They’ll appear after the next update.',
+};
+const MONTH_YEAR = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
+const FULL_DATE = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+const fullDate = (d) => FULL_DATE.format(new Date(`${d.slice(0, 10)}T00:00:00Z`));
+const ymAdd = (ym, k) => { const [y, m] = ym.split('-').map(Number); return new Date(Date.UTC(y, m - 1 + k, 1)).toISOString().slice(0, 7); };
+const ymLabel = (ym) => MONTH_YEAR.format(new Date(`${ym}-01T00:00:00Z`));
+const isYm = (v) => /^\d{4}-(0[1-9]|1[0-2])$/.test(v || '');
+const r2 = (n) => Math.round(n * 100) / 100;
+const SOURCE = { bank: 'from your bank', you: 'yours', calculated: 'calculated', payments: 'from your payments' };
+
+// Month-by-month schedule. Extra principal goes on from `extraFrom`; lumps are
+// one-time payments in a given month. Stops when paid off (or after 60 years).
+function amortize({ balance, rate, payment, start, extra = 0, extraFrom = start, lumps = [] }) {
+  const r = rate / 1200;
+  const lumpBy = new Map();
+  for (const l of lumps) if (l.amount > 0 && isYm(l.month)) lumpBy.set(l.month, (lumpBy.get(l.month) || 0) + l.amount);
+  const rows = [];
+  let bal = balance, ym = start, interestTotal = 0;
+  for (let i = 0; bal > 0.005 && i < 720; i++) {
+    const interest = r2(bal * r);
+    const principal = Math.min(bal, payment - interest);
+    let ext = (ym >= extraFrom ? extra : 0) + (lumpBy.get(ym) || 0);
+    ext = Math.max(0, Math.min(ext, bal - principal));
+    bal = r2(bal - principal - ext);
+    interestTotal += interest;
+    rows.push({ month: ym, interest, principal: r2(principal), extra: r2(ext), payment: r2(interest + principal + ext), balance: Math.max(0, bal) });
+    ym = ymAdd(ym, 1);
+  }
+  return { rows, interest: r2(interestTotal), months: rows.length, payoff: rows.length ? rows[rows.length - 1].month : start, never: bal > 0.005 };
+}
+
+let loansData = null;
+async function loadLoans() {
+  await withLoading($('#view-loans'), async () => {
+    const d = await api('/api/loans');
+    loansData = d;
+    $('#loan-status').replaceChildren(...consentNotes(d.status, 'loan details', LOAN_STATUS));
+    const list = $('#loans-list');
+    list.replaceChildren();
+    if (!d.loans.length) list.appendChild(el('p', { class: 'panel muted empty-note' }, 'No loans linked yet. Mortgages and loans appear here once a bank shares them, or add one with + Add manual account (type Loan).'));
+    const order = (l) => (l.kind === 'mortgage' ? 0 : 1);
+    for (const loan of [...d.loans].sort((x, y) => order(x) - order(y) || y.balance - x.balance)) list.appendChild(loanPanel(loan, d.today));
+  });
+}
+
+function loanPanel(loan, today) {
+  const panel = el('div', { class: 'panel loan' });
+  const head = el('div', { class: 'panel-head' });
+  const title = el('div');
+  const kind = { mortgage: 'Mortgage', student: 'Student loan', auto: 'Car loan' }[loan.kind] || 'Loan';
+  title.append(el('h2', {}, loan.name), el('p', { class: 'muted subhead' }, `${kind}${loan.loan_type ? ` · ${loan.loan_type}` : ''}${loan.institution ? ` · ${loan.institution}` : ''}`));
+  const edit = el('button', { type: 'button', class: 'btn' }, 'Edit');
+  edit.addEventListener('click', () => openLoanDialog(loan));
+  const right = el('div', { class: 'loan-head-right' });
+  right.append(el('strong', { class: 'head-figure' }, money(loan.balance)), edit);
+  head.append(title, right);
+  panel.appendChild(head);
+  const body = el('div', { class: 'panel-body loan-body' });
+  panel.appendChild(body);
+
+  // Facts, each with where it came from.
+  const facts = el('dl', { class: 'loan-facts' });
+  const fact = (label, value, source, note) => {
+    const wrap = el('div');
+    wrap.append(el('dt', {}, label));
+    const dd = el('dd', {}, value);
+    if (source) dd.append(el('span', { class: 'src' }, SOURCE[source] || source));
+    if (note) dd.append(el('span', { class: 'src' }, note));
+    wrap.appendChild(dd);
+    facts.appendChild(wrap);
+  };
+  const dateText = (d) => (d ? fullDate(d) : '—');
+  fact('Interest rate', loan.rate.value == null ? 'not known' : `${loan.rate.value}%${loan.rate_type ? ` ${loan.rate_type}` : ''}`, loan.rate.source);
+  fact('Principal & interest', loan.payment.value == null ? 'not known' : `${money(loan.payment.value)}/mo`, loan.payment.source);
+  if (loan.kind === 'mortgage' || loan.escrow.value != null) fact('Escrow', loan.escrow.value == null ? '—' : `${money(loan.escrow.value)}/mo`, loan.escrow.source);
+  if (loan.total_payment != null) fact('Total payment', `${money(loan.total_payment)}/mo`, loan.total_payment_source);
+  fact('Next payment due', dateText(loan.next_due_date.value), loan.next_due_date.source);
+  fact('Scheduled payoff', dateText(loan.maturity_date.value), loan.maturity_date.source);
+  if (loan.original_principal.value != null) fact('Original amount', money(loan.original_principal.value), loan.original_principal.source, loan.origination_date.value ? `taken ${fullDate(loan.origination_date.value)}` : null);
+  if (loan.ytd_interest != null) fact('Paid this year', `${money(loan.ytd_interest)} interest`, null, loan.ytd_principal != null ? `${money(loan.ytd_principal)} principal` : null);
+  if (loan.escrow_balance != null) fact('Escrow balance', money(loan.escrow_balance));
+  if (loan.has_pmi != null) fact('PMI', loan.has_pmi ? 'Yes' : 'No', null, loan.has_pmi ? 'usually removable at 20% equity' : null);
+  body.appendChild(facts);
+  if (loan.has_prepayment_penalty) body.appendChild(el('p', { class: 'note-box' }, el('strong', {}, 'This loan has a prepayment penalty. '), 'Check its terms before paying extra.'));
+  if (loan.past_due) body.appendChild(el('p', { class: 'note-box critical' }, el('strong', {}, 'Past due: '), `${money(loan.past_due)}.`));
+
+  if (loan.missing.length || !(loan.balance > 0)) {
+    body.appendChild(el('p', { class: 'note-box' }, el('strong', {}, loan.balance > 0 ? `Add the ${loan.missing.join(' and ')}` : 'Paid off'),
+      loan.balance > 0 ? ' to see the payoff schedule and what-ifs. Click Edit; it’s on your loan statement.' : ': nothing left to schedule.'));
+    return panel;
+  }
+
+  // Schedule starts with the next payment.
+  const nextDue = loan.next_due_date.value && loan.next_due_date.value >= today ? loan.next_due_date.value.slice(0, 7) : ymAdd(today.slice(0, 7), 1);
+  const base = amortize({ balance: loan.balance, rate: loan.rate.value, payment: loan.payment.value, start: nextDue });
+  if (base.never) {
+    body.appendChild(el('p', { class: 'note-box critical' }, el('strong', {}, 'This payment doesn’t cover the interest, '), 'so the balance never goes down. Check the rate and payment with Edit.'));
+    return panel;
+  }
+
+  // What-if: extra every month and/or a one-time payment. Remembered in this browser.
+  const key = `loanWhatIf:${loan.account_id}`;
+  const saved = prefs.get(key, {});
+  const box = el('div', { class: 'whatif' });
+  box.appendChild(el('h3', {}, 'What if I pay more?'));
+  const row = el('div', { class: 'whatif-inputs' });
+  const moneyField = (label, value) => {
+    const lab = el('label', { class: 'field' }, label);
+    const wrap = el('span', { class: 'money-input' });
+    const input = el('input', { type: 'number', min: '0', step: '50', inputmode: 'decimal', value: value ?? '' });
+    wrap.append(el('span', { 'aria-hidden': 'true' }, '$'), input);
+    lab.appendChild(wrap);
+    return [lab, input];
+  };
+  const monthField = (label, value) => {
+    const lab = el('label', { class: 'field' }, label);
+    const input = el('input', { type: 'month', value: value || nextDue, min: nextDue });
+    lab.appendChild(input);
+    return [lab, input];
+  };
+  const [l1, extraIn] = moneyField('Extra each month', saved.extra);
+  const [l2, fromIn] = monthField('Starting', saved.from);
+  const [l3, lumpIn] = moneyField('One-time payment', saved.lump);
+  const [l4, lumpAtIn] = monthField('In', saved.lumpAt);
+  const reset = el('button', { type: 'button', class: 'link-btn' }, 'Reset');
+  row.append(l1, l2, l3, l4, reset);
+  box.appendChild(row);
+  const results = el('div', { class: 'summary whatif-results' });
+  box.appendChild(results);
+  body.appendChild(box);
+
+  const chartCard = el('div', { class: 'chart-card loan-chart' });
+  const chart = el('div', { class: 'chart', 'data-label': `${loan.name} balance over time` });
+  chartCard.append(el('h3', {}, 'Balance over time'), chart);
+  body.appendChild(chartCard);
+
+  const sched = el('details', { class: 'chart-table schedule' });
+  const schedSummary = el('summary', {}, 'Amortization schedule');
+  const monthlyToggle = el('label', { class: 'inline-check' });
+  const monthlyBox = el('input', { type: 'checkbox' });
+  monthlyToggle.append(monthlyBox, ' Show every month');
+  const schedTable = el('div', { class: 'table-wrap' });
+  sched.append(schedSummary, monthlyToggle, schedTable);
+  body.appendChild(sched);
+
+  const update = () => {
+    const extra = Math.max(0, Number(extraIn.value) || 0), lump = Math.max(0, Number(lumpIn.value) || 0);
+    const from = isYm(fromIn.value) ? fromIn.value : nextDue, lumpAt = isYm(lumpAtIn.value) ? lumpAtIn.value : nextDue;
+    prefs.set(key, { extra: extraIn.value, from, lump: lumpIn.value, lumpAt });
+    const what = extra || lump ? amortize({ balance: loan.balance, rate: loan.rate.value, payment: loan.payment.value, start: nextDue, extra, extraFrom: from, lumps: [{ month: lumpAt, amount: lump }] }) : null;
+    const tile = (label, value, note) => { const d = el('div'); d.append(el('span', {}, label), el('strong', {}, value)); if (note) d.append(el('small', { class: 'muted' }, note)); return d; };
+    const cut = what ? base.months - what.months : 0;
+    const yrs = (mo) => (mo >= 12 ? `${Math.floor(mo / 12)} yr${mo >= 24 ? 's' : ''}${mo % 12 ? ` ${mo % 12} mo` : ''}` : `${mo} mo`);
+    results.replaceChildren(
+      tile('Paid off', ymLabel((what || base).payoff), what ? `instead of ${ymLabel(base.payoff)}` : `${yrs(base.months)} from now`),
+      tile('Months cut', what ? `${cut}` : '0', what && cut ? yrs(cut) + ' sooner' : 'add a payment above'),
+      tile('Interest saved', money(what ? base.interest - what.interest : 0), what ? `${money(what.interest)} left to pay` : null),
+      tile('Interest left to pay', money(base.interest), 'on the current schedule'),
+    );
+    // Balance at the end of each month, both schedules.
+    const labels = base.rows.map((r) => ymLabel(r.month));
+    const series = [{ label: 'Current schedule', color: 'var(--tick)', dashed: !!what, values: base.rows.map((r) => r.balance) }];
+    if (what) series.push({ label: 'With extra payments', color: 'var(--series-1)', values: base.rows.map((_, i) => (i < what.rows.length ? what.rows[i].balance : null)) });
+    Charts.lines(chart, { labels, series, format: wholeMoney });
+    renderSchedule(schedTable, what || base, monthlyBox.checked, !!what);
+  };
+  for (const i of [extraIn, fromIn, lumpIn, lumpAtIn]) i.addEventListener('input', update);
+  monthlyBox.addEventListener('change', update);
+  reset.addEventListener('click', () => { extraIn.value = ''; lumpIn.value = ''; fromIn.value = nextDue; lumpAtIn.value = nextDue; update(); });
+  // Charts need the panel's width, so draw once it's on the page.
+  requestAnimationFrame(update);
+  return panel;
+}
+
+// The schedule as a table: one row per year, or per month.
+function renderSchedule(container, sched, monthly, withExtra) {
+  let rows = sched.rows;
+  if (!monthly) {
+    const byYear = new Map();
+    for (const r of rows) {
+      const y = r.month.slice(0, 4);
+      const t = byYear.get(y) || { month: y, payment: 0, principal: 0, extra: 0, interest: 0, balance: 0 };
+      t.payment += r.payment; t.principal += r.principal; t.extra += r.extra; t.interest += r.interest; t.balance = r.balance;
+      byYear.set(y, t);
+    }
+    rows = [...byYear.values()];
+  }
+  Charts.table(container, {
+    rows,
+    columns: [
+      { label: monthly ? 'Month' : 'Year', get: (r) => (monthly ? ymLabel(r.month) : r.month) },
+      { label: 'Paid', num: true, get: (r) => money(r.payment) },
+      { label: 'Principal', num: true, get: (r) => money(r.principal) },
+      ...(withExtra ? [{ label: 'Extra', num: true, get: (r) => (r.extra ? money(r.extra) : '—') }] : []),
+      { label: 'Interest', num: true, get: (r) => money(r.interest) },
+      { label: 'Balance after', num: true, get: (r) => money(r.balance) },
+    ],
+  });
+}
+
+let editingLoan = null;
+const loanForm = $('#loan-form');
+function openLoanDialog(loan) {
+  editingLoan = loan;
+  loanForm.reset();
+  $('#loan-error').hidden = true;
+  $('#loan-title').textContent = loan.name;
+  const mine = loan.mine || {};
+  const set = (k, v, ph) => { loanForm[k].value = v ?? ''; if (ph !== undefined && loanForm[k].type !== 'date') loanForm[k].placeholder = ph ?? ''; };
+  set('rate', mine.rate, loan.rate.source && loan.rate.source !== 'you' ? String(loan.rate.value) : '');
+  set('payment', mine.payment, loan.payment.source && loan.payment.source !== 'you' ? String(loan.payment.value) : '');
+  set('escrow', mine.escrow, loan.escrow.source && loan.escrow.source !== 'you' ? String(loan.escrow.value) : '');
+  set('original_principal', mine.original_principal, loan.original_principal.source === 'bank' ? String(loan.original_principal.value) : '');
+  for (const k of ['maturity_date', 'next_due_date', 'origination_date']) set(k, mine[k]);
+  $('#loan-dialog').showModal();
+  loanForm.rate.focus();
+}
+loanForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {};
+  for (const k of ['rate', 'payment', 'escrow', 'maturity_date', 'next_due_date', 'original_principal', 'origination_date']) body[k] = loanForm[k].value;
+  try {
+    await api(`/api/loans/${encodeURIComponent(editingLoan.account_id)}`, { method: 'PUT', body });
+    $('#loan-dialog').close();
+    await loadLoans();
+  } catch (err) {
+    const box = $('#loan-error');
+    box.textContent = err.message;
+    box.hidden = false;
+  }
+});
+$('#loan-cancel').addEventListener('click', () => $('#loan-dialog').close());
+$('#loan-clear').addEventListener('click', async () => {
+  await api(`/api/loans/${encodeURIComponent(editingLoan.account_id)}`, { method: 'PUT', body: {} });
+  $('#loan-dialog').close();
+  await loadLoans();
 });
 
 // ------------------------------------------------------------ Investments --
@@ -1692,7 +1955,7 @@ async function loadInvestments() {
 }
 
 // ----------------------------------------------------------------- Router --
-const VIEWS = { overview: loadOverview, transactions: loadTransactions, bills: loadBills, cards: loadCards, budgets: loadBudgets, trends: loadTrends, investments: loadInvestments, rules: loadRulesView };
+const VIEWS = { overview: loadOverview, transactions: loadTransactions, bills: loadBills, cards: loadCards, loans: loadLoans, budgets: loadBudgets, trends: loadTrends, investments: loadInvestments, rules: loadRulesView };
 
 function route() {
   const view = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : 'overview';

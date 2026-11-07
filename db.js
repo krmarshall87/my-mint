@@ -35,6 +35,7 @@ function accountFromPlaid(a, itemId) {
     current_balance: a.balances?.current ?? null,
     available_balance: a.balances?.available ?? null,
     iso_currency_code: a.balances?.iso_currency_code || null,
+    credit_limit: a.balances?.limit ?? null,
   };
 }
 
@@ -149,6 +150,9 @@ const SCHEMA = [
     account_id TEXT PRIMARY KEY,
     nickname TEXT NOT NULL
   )`,
+  // Added later; one ALTER per statement (CockroachDB).
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC`,
+  `ALTER TABLE items ADD COLUMN IF NOT EXISTS consent_expires_at TIMESTAMPTZ`,
   `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
   `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
 ];
@@ -195,6 +199,10 @@ class PgStore {
     await this.pool.query('UPDATE items SET error = $2 WHERE item_id = $1', [itemId, error]);
   }
 
+  async setItemConsentExpiry(itemId, at) {
+    await this.pool.query('UPDATE items SET consent_expires_at = $2 WHERE item_id = $1', [itemId, at]);
+  }
+
   async deleteItem(itemId) {
     await this.pool.query('DELETE FROM category_overrides WHERE transaction_id IN (SELECT transaction_id FROM transactions WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM account_nicknames WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
@@ -223,11 +231,12 @@ class PgStore {
       await client.query('BEGIN');
       for (const a of accounts.map((x) => accountFromPlaid(x, itemId))) {
         await client.query(
-          `INSERT INTO accounts VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+          `INSERT INTO accounts (account_id, item_id, name, official_name, mask, type, subtype, current_balance, available_balance, iso_currency_code, credit_limit)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            ON CONFLICT (account_id) DO UPDATE SET
              name=$3, official_name=$4, mask=$5, type=$6, subtype=$7,
-             current_balance=$8, available_balance=$9, iso_currency_code=$10`,
-          Object.values(a),
+             current_balance=$8, available_balance=$9, iso_currency_code=$10, credit_limit=$11`,
+          [a.account_id, a.item_id, a.name, a.official_name, a.mask, a.type, a.subtype, a.current_balance, a.available_balance, a.iso_currency_code, a.credit_limit],
         );
       }
       for (const t of [...added, ...modified].map((x) => txFromPlaid(x, itemId))) {
@@ -268,6 +277,7 @@ class PgStore {
       ...r,
       current_balance: r.current_balance === null ? null : Number(r.current_balance),
       available_balance: r.available_balance === null ? null : Number(r.available_balance),
+      credit_limit: r.credit_limit == null ? null : Number(r.credit_limit),
     }));
   }
 
@@ -540,6 +550,11 @@ class FileStore {
 
   async setItemError(itemId, error) {
     if (this.data.items[itemId]) this.data.items[itemId].error = error;
+    this.save();
+  }
+
+  async setItemConsentExpiry(itemId, at) {
+    if (this.data.items[itemId]) this.data.items[itemId].consent_expires_at = at;
     this.save();
   }
 
