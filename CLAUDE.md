@@ -13,6 +13,7 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
   - Add a test with every feature. Extend the stub when Plaid data is involved. Keep SQL portable between Postgres and CockroachDB: no `to_char`, no advisory locks, one DDL statement per query, wrap `count()`/INT8 results in `Number()` (node-pg returns them as strings), and retry transactions on SQLSTATE `40001`.
 - Test anything that touches Plaid against the **sandbox** (`PLAID_ENV=sandbox`). To link the test bank without the UI, call `sandboxPublicTokenCreate` (`ins_109508`, First Platypus Bank, `initial_products: ['transactions']`), then POST to `/api/exchange`. Test the Link pop-up itself with Playwright using `user_good` / `pass_good`.
 - `render.yaml` entries with `value:` are re-applied by Render on every Blueprint sync and overwrite dashboard edits. Put anything managed in the dashboard under `sync: false`. `PLAID_ENV` is set to `production` there; use a local `.env` with `PLAID_ENV=sandbox` for testing.
+- **Dependabot** (`.github/dependabot.yml`) opens weekly npm PRs (minor and patch grouped) and monthly Actions PRs. They aren't yours: merge one only when the tests pass and the owner agrees. A major version (express, pg, plaid) can change behavior, so read its changelog first.
 - Never commit secrets: no Plaid keys, `.env`, `data/`, or access tokens. Pass keys as environment variables only.
 
 ## Data
