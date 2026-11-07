@@ -173,9 +173,14 @@ async function syncItem(item) {
       }
       // Plaid returns an empty cursor while the initial pull is still being prepared.
       if (!cursor && !added.length) return { added: 0, modified: 0, removed: 0, pending_initial_pull: true };
+      // The sync only lists checking, savings and cards; /accounts/get has every
+      // account (investments, loans, HSAs) with its balance.
+      try { accounts = (await plaid.accountsGet({ access_token: item.access_token })).data.accounts; }
+      catch (err) { console.error('accounts get', plaidError(err).error_code); }
       await store.applySync(item.item_id, { accounts, added, modified, removed, cursor });
       bumpData();
-      return { added: added.length, modified: modified.length, removed: removed.length };
+      const investments = await syncInvestments(item, accounts, cursor);
+      return { added: added.length, modified: modified.length, removed: removed.length, ...(investments ? { investments } : {}) };
     } catch (err) {
       const code = err.response?.data?.error_code;
       if (code === 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION') continue; // restart from startCursor
@@ -220,6 +225,7 @@ app.post('/api/link-token', async (req, res) => {
       const item = await items.get(itemId);
       if (!item) return res.status(404).json({ error_message: 'Unknown item' });
       request.access_token = item.access_token;
+      if (item.error === CONSENT_NEEDED) request.additional_consented_products = [Products.Investments];
     } else {
       request.products = [Products.Transactions];
       request.transactions = { days_requested: 730 };
@@ -881,6 +887,92 @@ app.get('/api/budget-summary', async (req, res) => {
   res.json(await budgetSummary(month));
 });
 
+// ----------------------------------------------------------- investments --
+// Holdings and investment activity come from Plaid's Investments product, and
+// only for banks that actually have investment accounts (it's billed per bank).
+const INVESTMENT_TYPES = new Set(['investment', 'brokerage']);
+const investmentStatus = new Map(); // item_id -> null (ok) or a Plaid error code
+const CONSENT_NEEDED = 'ADDITIONAL_CONSENT_REQUIRED';
+
+async function syncInvestments(item, accounts, cursor) {
+  const invIds = new Set(accounts.filter((a) => INVESTMENT_TYPES.has(a.type)).map((a) => a.account_id));
+  if (!invIds.size) return null;
+  try {
+    const { data: h } = await plaid.investmentsHoldingsGet({ access_token: item.access_token });
+    const sec = new Map(h.securities.map((x) => [x.security_id, x]));
+    await store.replaceHoldings(item.item_id, h.holdings.map((x) => {
+      const s = sec.get(x.security_id) || {};
+      return {
+        account_id: x.account_id, security_id: x.security_id,
+        ticker: s.ticker_symbol || null, name: s.name || 'Unknown security', type: s.is_cash_equivalent ? 'cash' : s.type || 'other',
+        quantity: x.quantity, price: x.institution_price, value: x.institution_value, cost_basis: x.cost_basis ?? null,
+        iso_currency_code: x.iso_currency_code || s.iso_currency_code || 'USD',
+      };
+    }));
+    // Activity: two years the first time, then the last 90 days (it isn't incremental like /transactions/sync).
+    const have = (await categorizedTransactions()).some((t) => invIds.has(t.account_id) && t.plaid_category === 'INVESTMENT');
+    const end = isoDate(new Date()), start = daysAgo(have ? 90 : 730);
+    const txns = [];
+    for (let offset = 0, total = Infinity; offset < total; ) {
+      const { data } = await plaid.investmentsTransactionsGet({ access_token: item.access_token, start_date: start, end_date: end, options: { count: 500, offset } });
+      total = data.total_investment_transactions;
+      const sec2 = new Map(data.securities.map((x) => [x.security_id, x]));
+      for (const t of data.investment_transactions) {
+        const s = sec2.get(t.security_id);
+        txns.push({
+          transaction_id: t.investment_transaction_id, account_id: t.account_id, date: t.date, name: t.name,
+          merchant_name: s?.ticker_symbol ? `${s.ticker_symbol}${s.name ? ` · ${s.name}` : ''}` : null,
+          amount: t.amount, iso_currency_code: t.iso_currency_code || 'USD', pending: false,
+          personal_finance_category: { primary: 'INVESTMENT', detailed: `INVESTMENT_${t.type}_${t.subtype || t.type}`.toUpperCase().replace(/\s+/g, '_') },
+        });
+      }
+      if (!data.investment_transactions.length) break;
+      offset += data.investment_transactions.length;
+    }
+    if (txns.length) await store.applySync(item.item_id, { accounts: [], added: txns, modified: [], removed: [], cursor });
+    investmentStatus.set(item.item_id, null);
+    bumpData();
+    return { holdings: h.holdings.length, activity: txns.length };
+  } catch (err) {
+    const code = err.response?.data?.error_code || err.message;
+    investmentStatus.set(item.item_id, code);
+    // The bank wants your OK before sharing investment details: "reconnect" asks for it.
+    if (code === CONSENT_NEEDED) await store.setItemError(item.item_id, CONSENT_NEEDED);
+    else console.error('investments', item.institution_name, code);
+    return { error: code };
+  }
+}
+
+app.get('/api/investments', async (_req, res) => {
+  const [accounts, holdings, itemList] = await Promise.all([listAccounts(), store.listHoldings(), store.listItems()]);
+  const invAccounts = accounts.filter((a) => INVESTMENT_TYPES.has(a.type));
+  const byAccount = new Map();
+  for (const h of holdings) { const l = byAccount.get(h.account_id) || []; l.push(h); byAccount.set(h.account_id, l); }
+  const allocation = new Map();
+  let value = 0, costed = 0, cost = 0;
+  const out = invAccounts.map((a) => {
+    const hs = (byAccount.get(a.account_id) || []).map((h) => ({ ...h, gain: h.cost_basis != null && h.value != null ? round2(h.value - h.cost_basis) : null }));
+    for (const h of hs) {
+      allocation.set(h.type, (allocation.get(h.type) || 0) + (h.value || 0));
+      if (h.cost_basis != null && h.value != null) { costed += h.value; cost += h.cost_basis; }
+    }
+    value += a.current_balance || 0;
+    return { account_id: a.account_id, name: acctNameOf(a), institution: a.institution_name, item_id: a.item_id, balance: a.current_balance, holdings: hs, updated_at: hs[0]?.updated_at ?? null };
+  });
+  const status = itemList
+    .filter((i) => invAccounts.some((a) => a.item_id === i.item_id))
+    .map((i) => ({ item_id: i.item_id, institution: i.institution_name, status: investmentStatus.get(i.item_id) ?? (i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null) }));
+  res.json({
+    accounts: out,
+    value: round2(value),
+    cost_basis: round2(cost),
+    gain: round2(costed - cost),
+    gain_pct: cost > 0 ? round2(((costed - cost) / cost) * 100) : null,
+    allocation: [...allocation].map(([type, v]) => ({ type, value: round2(v) })).sort((a, b) => b.value - a.value),
+    status,
+  });
+});
+
 // ------------------------------------------------- spending pace & worth --
 // This month's spending so far, day by day, against last month's.
 function spendingByDay(txns) {
@@ -1050,7 +1142,7 @@ async function detectRecurring() {
   const reversed = (t) => (credits.get(t.account_id) || []).some((c) => Math.abs(c.amount + t.amount) < 0.01 && Math.abs(dayNum(c.date) - dayNum(t.date)) <= 3);
   const groups = new Map();
   for (const t of rows) {
-    if (t.amount <= 0 || t.pending || SKIP_RECURRING.has(t.category)) continue;
+    if (t.amount <= 0 || t.pending || SKIP_RECURRING.has(t.category) || (t.excluded && t.category !== 'Credit Card Payment')) continue;
     const key = (t.display_name || merchantKey(t) || t.name).toLowerCase();
     // Checks to different people all look alike; only a rule's name tells them apart.
     if (!key || (!t.display_name && /^check\b/.test(key))) continue;
@@ -1131,7 +1223,8 @@ app.get('/api/alerts', async (_req, res) => {
 
   // Broken bank connections.
   for (const item of await store.listItems()) {
-    if (item.error) add(`item:${item.item_id}:${item.error}`, 'critical', today, b(item.institution_name), ` needs attention (${item.error}). Reconnect it from the accounts list.`);
+    if (item.error === CONSENT_NEEDED) add(`item:${item.item_id}:${item.error}`, 'warning', today, b(item.institution_name), ' needs your OK to share investment details (holdings and activity). Click “reconnect” next to it in the accounts list.');
+    else if (item.error) add(`item:${item.item_id}:${item.error}`, 'critical', today, b(item.institution_name), ` needs attention (${item.error}). Reconnect it from the accounts list.`);
   }
 
   // Budgets this month.

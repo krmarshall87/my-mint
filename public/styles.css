@@ -414,3 +414,8 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .bill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .bill-name small, .bills-table .due { display: block; color: var(--muted); font-size: 11px; text-transform: none; }
 .bills-table tr.card-payment td { color: var(--muted); }
+
+/* ---------------------------------------------------------- Investments -- */
+.note-box { margin: 0 0 8px; padding: 10px 14px; border: 1px solid var(--border); border-left: 3px solid var(--warning); border-radius: 8px; background: var(--panel); font-size: 13px; }
+.holdings-table td.desc strong { display: block; }
+#inv-accounts, #inv-status { display: grid; gap: 16px; } #inv-status { gap: 8px; } #inv-status:empty { display: none; } #inv-status .note-box { margin: 0; }

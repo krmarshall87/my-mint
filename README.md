@@ -12,11 +12,12 @@ A small personal finance app that links your bank accounts through [Plaid](https
 - **Manual accounts:** for cards Plaid can't connect (a Verizon Visa, a store card), add a manual account with its login page and import the CSV your card's website lets you download. Columns are guessed and remembered per account, there's a preview, and re-importing an overlapping file never duplicates. The sidebar shows when each was last updated and links to its login page in a new tab; after 30 days without an import, you get a reminder (`MANUAL_STALE_DAYS` to change it).
 - **Account names:** generic bank names like "CREDIT CARD" are replaced with the card's official name or "<Bank> Credit Card". Click ✎ next to an account to rename it.
 - **Budgets:** monthly limits per category and an expected income, with a month picker, progress bars (green, amber, red) with a "today" marker, and a summary of income, spending and what's left over.
+- **Investments:** for brokerage and retirement accounts (IRA, 401k, …), the Investments tab shows the total value, gain or loss against cost basis, allocation by type (stocks, ETFs, mutual funds, bonds, cash, …) and each account's holdings. Investment activity appears in Transactions: dividends and interest count as income; buys, sells, contributions and withdrawals don't count as income or spending; fees count as spending.
 - **Trends:** spending by category as a pie or bars, net income by month, net worth, and top merchants. These follow the filters, and clicking a slice or bar opens the matching transactions.
 
 Income is the Income categories (Paycheck, Bonus, …) plus Dividend & Cap Gains. Other money in is a refund and reduces spending. Transfers, credit-card payments, investment trades and anything in *Hide from Budgets & Trends* are left out of both. Mortgage and loan payments are bills (Bills & Utilities) and count as spending; the matching activity on the loan account itself is left out automatically so nothing is counted twice.
 
-- **Backend:** Node + Express, using the official `plaid` SDK. It calls `/link/token/create`, `/item/public_token/exchange` and `/transactions/sync`.
+- **Backend:** Node + Express, using the official `plaid` SDK. It calls `/link/token/create`, `/item/public_token/exchange`, `/transactions/sync` and `/accounts/get`, plus `/investments/holdings/get` and `/investments/transactions/get` for banks that have investment accounts.
 - **Storage:** CockroachDB (or any Postgres) when `DATABASE_URL` is set. Tables are created automatically on startup. Without it, data goes to a local JSON file (`data/store.json`) for development.
 - **Auth:** HTTP Basic Auth on every page and API route. The username can be anything; the password is `APP_PASSWORD`. After 10 wrong passwords, that IP address is locked out for 15 minutes.
 - **Security:** Plaid access tokens are encrypted in the database with `ENCRYPTION_KEY` (AES-256-GCM). Strict security headers (CSP, HSTS) and `no-store` caching are set on every response.
@@ -54,7 +55,7 @@ Many large US banks link through OAuth, which redirects back to your app. To sup
 
 ### Notes
 
-- **Production access:** you need Plaid production approval for the Transactions product. Some institutions also need extra OAuth registration in the dashboard; it can take a few days.
+- **Production access:** you need Plaid production approval for the Transactions product. Holdings need the **Investments** product too (billed per connected bank, and only called for banks with investment accounts). Until it's enabled, investment balances still update and the Investments tab says why holdings are missing. If a bank asks for your OK to share investment details, click **reconnect** next to it. Some institutions also need extra OAuth registration in the dashboard; it can take a few days.
 - **Database:** the app uses CockroachDB Cloud, which is hosted outside Render. If the database is unreachable at startup, the app still starts, returns 503 from the API, and retries the connection in the background.
 - **Security:** never commit `.env` or the `DATABASE_URL` password. If your CockroachDB cluster restricts IPs, allow Render's outbound IPs (Render dashboard → your service → **Connect → Outbound**).
 - **Sandbox → production:** when you switch `PLAID_ENV`, remove the sandbox institutions in the UI first. Their tokens don't work in production.
@@ -88,6 +89,7 @@ All routes need Basic Auth.
 | GET | `/api/category-tree` | The category tree |
 | GET | `/api/recurring?days=30` | Recurring bills, those due within `days`, and monthly totals |
 | GET | `/api/spending-pace?month=YYYY-MM` | Cumulative spending by day for the month and the one before |
+| GET | `/api/investments` | Investment accounts with holdings, total value, gain or loss, allocation by type, and per-bank status |
 | GET | `/api/net-worth` | Month-end assets, debts and net worth (`estimated` before daily snapshots began) |
 | POST | `/api/manual-accounts` | Add a manual account: `{ name, institution, type, mask, login_url, balance }` |
 | PATCH | `/api/manual-accounts/:id` | Edit it |

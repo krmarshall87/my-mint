@@ -156,6 +156,11 @@ function manualLine(a) {
   </span>`;
 }
 
+const ERROR_TEXT = {
+  ADDITIONAL_CONSENT_REQUIRED: 'Needs your OK to share investment details. Click reconnect.',
+  ITEM_LOGIN_REQUIRED: 'Your bank needs you to sign in again. Click reconnect.',
+};
+
 function renderAccounts() {
   const box = $('#accounts');
   const selected = filtersForm.account_id.value;
@@ -187,7 +192,7 @@ function renderAccounts() {
           <span>${esc(i.institution_name)}${i.manual ? ' <small class="muted">(manual)</small>' : ''}</span>
           ${i.error ? `<button class="link-btn" data-relink="${esc(i.item_id)}">reconnect</button>` : ''}
           <button class="link-btn danger" data-remove="${esc(i.item_id)}">remove</button>
-        </div>${i.error ? `<div class="inst-error">${esc(i.error)}</div>` : ''}`).join('')}
+        </div>${i.error ? `<div class="inst-error">${esc(ERROR_TEXT[i.error] || i.error)}</div>` : ''}`).join('')}
     </section>` : '');
 
   const net = state.accounts.reduce((s, a) => s + signedBalance(a), 0);
@@ -1335,8 +1340,93 @@ $('#csv-form').addEventListener('submit', async (e) => {
   }
 });
 
+
+// ------------------------------------------------------------ Investments --
+// Fixed order, so each type always gets the same color.
+const INV_TYPES = [
+  ['equity', 'Stocks'], ['etf', 'ETFs'], ['mutual fund', 'Mutual funds'], ['fixed income', 'Bonds'],
+  ['cash', 'Cash'], ['cryptocurrency', 'Crypto'], ['derivative', 'Options & derivatives'],
+];
+const invTypeLabel = (t) => INV_TYPES.find(([k]) => k === t)?.[1] || 'Other';
+const invTypeColor = (t) => { const i = INV_TYPES.findIndex(([k]) => k === t); return i >= 0 ? `var(--cat-${i + 1})` : 'var(--cat-other)'; };
+const INV_STATUS = {
+  ADDITIONAL_CONSENT_REQUIRED: 'needs your OK to share investment details. Click “reconnect” next to it in the accounts list.',
+  PRODUCTS_NOT_SUPPORTED: 'doesn’t share investment details through Plaid. Balances still update.',
+  INVALID_PRODUCT: 'can’t share investment details yet: turn on the Investments product in your Plaid dashboard. Balances still update.',
+  PRODUCT_NOT_READY: 'is still preparing investment details. They’ll appear after the next update.',
+};
+const gainText = (g, pct) => (g == null ? '—' : `${signedMoney(g)}${pct != null ? ` (${pct > 0 ? '+' : ''}${pct.toFixed(1)}%)` : ''}`);
+
+async function loadInvestments() {
+  await withLoading($('#view-investments'), async () => {
+    const d = await api('/api/investments');
+    const notes = $('#inv-status');
+    notes.replaceChildren();
+    for (const s of d.status.filter((x) => x.status)) {
+      const p = el('p', { class: 'note-box' });
+      p.append(el('strong', {}, s.institution), ` ${INV_STATUS[s.status] || `couldn’t share investment details (${s.status}).`}`);
+      notes.appendChild(p);
+    }
+    $('#inv-value').textContent = money(d.value);
+    const gainEl = $('#inv-gain');
+    gainEl.textContent = d.cost_basis ? gainText(d.gain, d.gain_pct) : '—';
+    gainEl.className = d.cost_basis ? (d.gain >= 0 ? 'pos' : 'neg') : '';
+    $('#inv-accounts-count').textContent = String(d.accounts.length);
+    $('#inv-holdings-count').textContent = String(d.accounts.reduce((s, a) => s + a.holdings.length, 0));
+
+    const slices = d.allocation.filter((x) => x.value > 0).map((x) => ({ label: invTypeLabel(x.type), value: x.value, color: invTypeColor(x.type) }));
+    const allocEl = $('#inv-allocation');
+    if (slices.length) Charts.donut(allocEl, { slices, format: wholeMoney, centerLabel: 'invested' });
+    else allocEl.replaceChildren(el('p', { class: 'chart-empty muted' }, d.accounts.length ? 'No holdings reported yet.' : 'No investment accounts linked yet. Add one with + Add account.'));
+    const allocTotal = slices.reduce((s, x) => s + x.value, 0);
+    Charts.table($('#inv-allocation-table'), {
+      rows: slices,
+      columns: [
+        { label: 'Type', get: (x) => x.label },
+        { label: 'Value', num: true, get: (x) => money(x.value) },
+        { label: 'Share', num: true, get: (x) => `${allocTotal ? Math.round((x.value / allocTotal) * 100) : 0}%` },
+      ],
+    });
+
+    const box = $('#inv-accounts');
+    box.replaceChildren();
+    for (const a of d.accounts) {
+      const panel = el('div', { class: 'panel' });
+      const head = el('div', { class: 'panel-head' });
+      const title = el('div');
+      title.append(el('h2', {}, a.name), el('p', { class: 'muted subhead' }, a.updated_at ? `Updated ${new Date(a.updated_at).toLocaleString()}` : 'No holdings reported yet'));
+      head.append(title, el('strong', { class: 'head-figure' }, a.balance == null ? '—' : money(a.balance)));
+      panel.appendChild(head);
+      if (a.holdings.length) {
+        const wrap = el('div', { class: 'table-wrap' });
+        const t = el('table', { class: 'tx-table holdings-table' });
+        const hr = el('tr');
+        ['Holding', 'Type', 'Shares', 'Price', 'Value', 'Gain / loss'].forEach((h, i) => hr.appendChild(el('th', { class: i >= 2 ? 'num' : '' }, h)));
+        t.appendChild(el('thead')).appendChild(hr);
+        const body = el('tbody');
+        for (const h of a.holdings) {
+          const tr = el('tr');
+          const name = el('td', { class: 'desc' });
+          name.append(el('strong', {}, h.ticker || h.name), ...(h.ticker ? [el('div', { class: 'sub' }, h.name)] : []));
+          const pct = h.gain != null && h.cost_basis ? (h.gain / h.cost_basis) * 100 : null;
+          tr.append(name, el('td', { class: 'cat' }, invTypeLabel(h.type)),
+            el('td', { class: 'num' }, h.quantity == null ? '' : Number(h.quantity).toLocaleString(undefined, { maximumFractionDigits: 6 })),
+            el('td', { class: 'num' }, h.price == null ? '' : money(h.price)),
+            el('td', { class: 'num' }, h.value == null ? '' : money(h.value)),
+            el('td', { class: `num ${!h.gain ? 'muted' : h.gain > 0 ? 'pos' : 'neg'}` }, gainText(h.gain, pct)));
+          body.appendChild(tr);
+        }
+        t.appendChild(body);
+        wrap.appendChild(t);
+        panel.appendChild(wrap);
+      }
+      box.appendChild(panel);
+    }
+  });
+}
+
 // ----------------------------------------------------------------- Router --
-const VIEWS = { overview: loadOverview, transactions: loadTransactions, bills: loadBills, budgets: loadBudgets, trends: loadTrends, rules: loadRulesView };
+const VIEWS = { overview: loadOverview, transactions: loadTransactions, bills: loadBills, budgets: loadBudgets, trends: loadTrends, investments: loadInvestments, rules: loadRulesView };
 
 function route() {
   const view = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : 'overview';
