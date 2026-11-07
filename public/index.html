@@ -28,6 +28,7 @@
       <a href="#transactions" data-view="transactions">Transactions</a>
       <a href="#bills" data-view="bills">Bills</a>
       <a href="#cards" data-view="cards">Credit Cards</a>
+      <a href="#loans" data-view="loans">Loans</a>
       <a href="#budgets" data-view="budgets">Budgets</a>
       <a href="#trends" data-view="trends">Trends</a>
       <a href="#investments" data-view="investments">Investments</a>
@@ -282,13 +283,15 @@
           </label>
           <span class="muted hint" id="card-window"></span>
         </div>
-        <div class="summary summary-6">
+        <div class="summary">
           <div><span>Checking now</span><strong id="cp-checking">$0</strong></div>
           <div><span>Paychecks coming</span><strong id="cp-income">$0</strong></div>
           <div><span>Bills coming</span><strong id="cp-bills">$0</strong></div>
           <div><span>Statements still owed</span><strong id="cp-due">$0</strong></div>
           <div><span>Paid by due dates</span><strong id="cp-pay">$0</strong></div>
           <div><span>Interest, this month</span><strong id="cp-interest">$0</strong></div>
+          <div><span>Credit used</span><strong id="cp-util">—</strong><small class="muted" id="cp-util-note"></small></div>
+          <div><span>Card interest paid this year</span><strong id="cp-interest-ytd">$0</strong></div>
         </div>
         <div class="panel">
           <div class="panel-head"><h2>Payment plan</h2><span class="muted hint">Soonest due first</span></div>
@@ -307,6 +310,16 @@
           <div class="panel-head"><h2>Paychecks found</h2><span class="muted hint">Regular deposits into checking in an Income category</span></div>
           <div class="table-wrap"><table class="tx-table" id="card-income-table"></table></div>
         </div>
+      </section>
+
+      <!-- ---------------------------------------------------------- Loans -->
+      <section id="view-loans" class="view" hidden>
+        <div>
+          <h1>Loans</h1>
+          <p class="muted">Your mortgage and loans: rate, payment, payoff date and the full amortization schedule. Try extra monthly payments or a one-time payment to see how much interest you’d save and how many months come off the loan. Your bank shares details for mortgages and student loans; for car and personal loans, click Edit to add the rate and payment.</p>
+        </div>
+        <div id="loan-status"></div>
+        <div id="loans-list"></div>
       </section>
 
       <!-- --------------------------------------------------- Investments -->
@@ -452,6 +465,7 @@
       <p class="muted" id="card-dialog-note">Fill in what your bank doesn’t share. Anything left blank uses your bank’s value.</p>
       <div class="field-row">
         <label class="field">Interest rate (APR %) <input name="apr" type="number" min="0" max="100" step="0.01" inputmode="decimal" autocomplete="off" /></label>
+        <label class="field">Credit limit <input name="credit_limit" type="number" min="0" step="1" inputmode="decimal" autocomplete="off" /></label>
       </div>
       <fieldset class="field-group">
         <legend>0% or promotional rate</legend>
@@ -478,6 +492,36 @@
         <button type="button" id="card-clear" class="link-btn danger">Clear my details</button>
         <span class="spacer"></span>
         <button type="button" id="card-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="loan-dialog" class="dialog" aria-labelledby="loan-title">
+    <form id="loan-form" method="dialog">
+      <h3 id="loan-title">Loan details</h3>
+      <p class="muted">Fill in what your bank doesn’t share (it’s on your loan statement). Anything left blank uses your bank’s value or is worked out from the others.</p>
+      <div class="field-row">
+        <label class="field">Interest rate (%) <input name="rate" type="number" min="0" max="100" step="0.001" inputmode="decimal" autocomplete="off" /></label>
+        <label class="field">Payoff date <input name="maturity_date" type="date" /></label>
+      </div>
+      <div class="field-row">
+        <label class="field">Monthly principal &amp; interest <input name="payment" type="number" min="0" step="0.01" inputmode="decimal" autocomplete="off" /></label>
+        <label class="field">Monthly escrow <input name="escrow" type="number" min="0" step="0.01" inputmode="decimal" autocomplete="off" />
+          <span class="hint">Taxes and insurance, if they’re in your payment</span></label>
+      </div>
+      <div class="field-row">
+        <label class="field">Next payment due <input name="next_due_date" type="date" /></label>
+        <label class="field">Original amount <input name="original_principal" type="number" min="0" step="0.01" inputmode="decimal" autocomplete="off" /></label>
+      </div>
+      <div class="field-row">
+        <label class="field">Loan start date <input name="origination_date" type="date" /></label>
+      </div>
+      <p id="loan-error" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" id="loan-clear" class="link-btn danger">Clear my details</button>
+        <span class="spacer"></span>
+        <button type="button" id="loan-cancel" class="btn">Cancel</button>
         <button type="submit" class="btn-primary">Save</button>
       </div>
     </form>

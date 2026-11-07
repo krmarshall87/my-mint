@@ -179,6 +179,9 @@ async function syncItem(item) {
       catch (err) { console.error('accounts get', plaidError(err).error_code); }
       await store.applySync(item.item_id, { accounts, added, modified, removed, cursor });
       bumpData();
+      // When the bank's permission runs out (some banks expire it every 12–24 months).
+      try { await store.setItemConsentExpiry(item.item_id, (await plaid.itemGet({ access_token: item.access_token })).data.item?.consent_expiration_time || null); }
+      catch (err) { console.error('item get', plaidError(err).error_code); }
       const investments = await syncInvestments(item, accounts, cursor);
       const cards = await syncLiabilities(item, accounts);
       return { added: added.length, modified: modified.length, removed: removed.length, ...(investments ? { investments } : {}), ...(cards ? { cards } : {}) };
@@ -293,6 +296,7 @@ app.get('/api/items', async (_req, res) => {
     ...rest,
     manual: isManualItem(rest),
     ...(rest.error === CONSENT_NEEDED ? { consent_for: consentFor(rest.item_id) } : {}),
+    expires_in_days: expiresInDays(rest),
   })));
 });
 
@@ -974,6 +978,13 @@ async function productError(item, statusMap, label, err) {
   return { error: code };
 }
 
+// Days until a bank's permission to share runs out (null when it doesn't expire).
+const EXPIRY_WARN_DAYS = () => Number(process.env.CONSENT_WARN_DAYS || 30);
+function expiresInDays(item) {
+  if (!item.consent_expires_at) return null;
+  return Math.ceil((new Date(item.consent_expires_at).getTime() - Date.now()) / 86400000);
+}
+
 // What a bank still needs your OK to share, in a few words.
 function consentFor(itemId) {
   const inv = investmentStatus.get(itemId) === CONSENT_NEEDED, card = liabilityStatus.get(itemId) === CONSENT_NEEDED;
@@ -988,10 +999,34 @@ function consentFor(itemId) {
 const liabilityStatus = new Map(); // item_id -> null (ok) or a Plaid error code
 
 async function syncLiabilities(item, accounts) {
-  if (!accounts.some((a) => a.type === 'credit')) return null;
+  if (!accounts.some((a) => a.type === 'credit' || a.type === 'loan')) return null;
   try {
     const { data } = await plaid.liabilitiesGet({ access_token: item.access_token });
-    const rows = (data.liabilities?.credit || []).filter((c) => c.account_id).map((c) => ({
+    const L = data.liabilities || {};
+    const loans = [
+      ...(L.mortgage || []).filter((m) => m.account_id).map((m) => ({
+        kind: 'mortgage', account_id: m.account_id,
+        rate: m.interest_rate?.percentage ?? null, rate_type: m.interest_rate?.type ?? null,
+        next_payment: m.next_monthly_payment ?? null, next_due_date: m.next_payment_due_date ?? null,
+        last_payment_amount: m.last_payment_amount ?? null, last_payment_date: m.last_payment_date ?? null,
+        maturity_date: m.maturity_date ?? null, origination_date: m.origination_date ?? null,
+        original_principal: m.origination_principal_amount ?? null, loan_term: m.loan_term ?? null,
+        loan_type: m.loan_type_description ?? null, escrow_balance: m.escrow_balance ?? null,
+        has_pmi: m.has_pmi ?? null, has_prepayment_penalty: m.has_prepayment_penalty ?? null,
+        past_due: m.past_due_amount ?? null, ytd_interest: m.ytd_interest_paid ?? null, ytd_principal: m.ytd_principal_paid ?? null,
+      })),
+      ...(L.student || []).filter((x) => x.account_id).map((x) => ({
+        kind: 'student', account_id: x.account_id,
+        rate: x.interest_rate_percentage ?? null, next_payment: x.minimum_payment_amount ?? null, next_due_date: x.next_payment_due_date ?? null,
+        last_payment_amount: x.last_payment_amount ?? null, last_payment_date: x.last_payment_date ?? null,
+        maturity_date: x.expected_payoff_date ?? null, origination_date: x.origination_date ?? null,
+        original_principal: x.origination_principal_amount ?? null, loan_type: x.loan_name ?? null,
+        ytd_interest: x.ytd_interest_paid ?? null, ytd_principal: x.ytd_principal_paid ?? null,
+        outstanding_interest: x.outstanding_interest_amount ?? null, past_due: null,
+      })),
+    ];
+    const rows = (L.credit || []).filter((c) => c.account_id).map((c) => ({
+      kind: 'credit',
       account_id: c.account_id,
       statement_balance: c.last_statement_balance ?? null,
       statement_date: c.last_statement_issue_date ?? null,
@@ -1000,11 +1035,11 @@ async function syncLiabilities(item, accounts) {
       last_payment_amount: c.last_payment_amount ?? null,
       last_payment_date: c.last_payment_date ?? null,
       is_overdue: c.is_overdue ?? null,
-      aprs: (c.aprs || []).map((a) => ({ type: a.apr_type, apr: a.apr_percentage, balance: a.balance_subject_to_apr ?? null })),
+      aprs: (c.aprs || []).map((a) => ({ type: a.apr_type, apr: a.apr_percentage, balance: a.balance_subject_to_apr ?? null, interest: a.interest_charge_amount ?? null })),
     }));
-    await store.replaceCardStatements(item.item_id, rows);
+    await store.replaceCardStatements(item.item_id, [...rows, ...loans]);
     liabilityStatus.set(item.item_id, null);
-    return { statements: rows.length };
+    return { statements: rows.length, loans: loans.length };
   } catch (err) {
     return productError(item, liabilityStatus, 'liabilities', err);
   }
@@ -1404,7 +1439,20 @@ async function cardPlan({ buffer }) {
     const remaining = d.statement_balance == null ? null : round2(Math.max(0, d.statement_balance - paid));
     const minimum = remaining == null ? null : round2(Math.min(remaining, Math.max(0, (d.minimum_payment ?? Math.max(35, remaining * 0.02)) - paid)));
     const aprAssumed = d.apr == null;
+    // Utilization: what you owe as a share of the limit (a big part of a credit score).
+    const limit = a.credit_limit ?? us.get(a.account_id)?.credit_limit ?? null;
+    const owes = Math.max(0, a.current_balance || 0);
+    // Interest: what the bank charged on the last statement, and Finance Charges on this card this year.
+    const charged = st.get(a.account_id)?.aprs?.filter((x) => x.interest != null);
+    const year = today.slice(0, 4);
+    const ytd = txns.filter((t) => t.account_id === a.account_id && t.category === 'Finance Charge' && t.date.startsWith(year)).reduce((s, t) => s + t.amount, 0);
     return {
+      credit_limit: limit,
+      credit_limit_source: a.credit_limit != null ? 'bank' : limit != null ? 'you' : null,
+      utilization: limit > 0 ? round2((owes / limit) * 100) : null,
+      to_30: limit > 0 ? round2(Math.max(0, owes - limit * 0.3)) : null,
+      interest_charged: charged?.length ? round2(charged.reduce((s, x) => s + x.interest, 0)) : null,
+      interest_ytd: round2(Math.max(0, ytd)),
       account_id: a.account_id, name: acctNameOf(a), institution: a.institution_name, manual: a.manual, mine: us.get(a.account_id) || null,
       balance: a.current_balance, ...d, paid_since_statement: paid, remaining,
       minimum, minimum_estimated: d.minimum_payment == null && remaining != null,
@@ -1536,6 +1584,9 @@ async function cardPlan({ buffer }) {
   const minShort = round2(planned.reduce((s, c) => s + Math.max(0, c.minimum - c.pay), 0));
   const cardDebt = round2(cards.reduce((s, c) => s + Math.max(0, c.balance || 0), 0));
   const interest = round2(cards.reduce((s, c) => s + c.interest_cost, 0));
+  const limited = cards.filter((c) => c.credit_limit > 0);
+  const totalLimit = round2(limited.reduce((s, c) => s + c.credit_limit, 0));
+  const utilization = totalLimit ? round2((limited.reduce((s, c) => s + Math.max(0, c.balance || 0), 0) / totalLimit) * 100) : null;
 
   // Lowest point of checking, and when. Below the buffer means the bills alone don't fit.
   const lowDay = bal.indexOf(Math.min(...bal));
@@ -1587,6 +1638,8 @@ async function cardPlan({ buffer }) {
       bills: round2(-events.filter((e) => e.type === 'bill').reduce((s, e) => s + e.amount, 0)),
       due: totalDue, pay: totalPay, pay_late: totalLate, unpaid, minimum_short: minShort,
       interest, card_debt: cardDebt,
+      credit_limit: totalLimit, utilization, cards_without_limit: cards.length - limited.length,
+      interest_ytd: round2(cards.reduce((s, c) => s + c.interest_ytd, 0)),
       left_over: round2(Math.max(0, lowest - buffer)),
       lowest_balance: lowest,
       lowest_date: fromDayNum(dayNum(today) + lowDay),
@@ -1607,7 +1660,7 @@ app.get('/api/card-plan', async (req, res) => {
 });
 
 // Your own details for a card: APR, a 0% promo, or the statement for a manual card.
-const CARD_FIELDS = { apr: 'pct', promo_apr: 'pct', promo_end: 'date', statement_balance: 'money', statement_date: 'date', due_date: 'date', minimum_payment: 'money' };
+const CARD_FIELDS = { credit_limit: 'money', apr: 'pct', promo_apr: 'pct', promo_end: 'date', statement_balance: 'money', statement_date: 'date', due_date: 'date', minimum_payment: 'money' };
 app.put('/api/cards/:id', async (req, res) => {
   const accounts = await store.listAccounts();
   const a = accounts.find((x) => x.account_id === req.params.id);
@@ -1626,6 +1679,98 @@ app.put('/api/cards/:id', async (req, res) => {
     }
   }
   if (out.statement_balance != null && !out.statement_date) return res.status(400).json({ error_message: 'Add the statement date with the statement balance' });
+  await store.setCardSettings(req.params.id, Object.keys(out).length ? out : null);
+  res.json({ ok: true, details: out });
+});
+
+// ----------------------------------------------------------------- loans --
+// Mortgages and student loans from Plaid Liabilities (Plaid doesn't cover car
+// or personal loans), your own details for anything it leaves out, and the
+// payments seen arriving on the loan account. The browser builds the
+// amortization schedule and the what-ifs from this.
+const monthsBetween = (from, to) => {
+  const [y1, m1] = from.split('-').map(Number), [y2, m2] = to.split('-').map(Number);
+  return (y2 - y1) * 12 + (m2 - m1);
+};
+const pmt = (balance, ratePct, months) => {
+  if (!(balance > 0) || !(months > 0)) return null;
+  const r = ratePct / 1200;
+  return r ? (balance * r) / (1 - (1 + r) ** -months) : balance / months;
+};
+
+const kindOf = (a, p) => p.kind || (/mortgage|home/i.test(`${a.subtype} ${a.name}`) ? 'mortgage' : a.subtype || 'loan');
+
+app.get('/api/loans', async (_req, res) => {
+  const today = isoDate(new Date());
+  const [accounts, statements, settings, txns, itemList] = await Promise.all([
+    listAccounts(), store.listCardStatements(), store.listCardSettings(), categorizedTransactions(), store.listItems(),
+  ]);
+  const st = new Map(statements.filter((x) => x.kind === 'mortgage' || x.kind === 'student').map((x) => [x.account_id, x]));
+  const us = new Map(settings.map((x) => [x.account_id, x]));
+  const loans = accounts.filter((a) => a.type === 'loan').map((a) => {
+    const p = st.get(a.account_id) || {};
+    const u = us.get(a.account_id) || {};
+    const pick = (mine, bank) => (mine != null ? { value: mine, source: 'you' } : bank != null ? { value: bank, source: 'bank' } : { value: null, source: null });
+    // Payments that reached the loan account (the other half of the payment from checking).
+    const paid = txns.filter((t) => t.account_id === a.account_id && t.amount < 0 && !t.pending).sort((x, y) => y.date.localeCompare(x.date));
+    const observed = paid.length ? round2(median(paid.slice(0, 3).map((t) => -t.amount))) : null;
+    const balance = Math.max(0, a.current_balance || 0);
+    const rate = pick(u.rate, p.rate);
+    const maturity = pick(u.maturity_date, p.maturity_date);
+    const nextDue = pick(u.next_due_date, p.next_due_date);
+    // Principal & interest: yours, or worked out from the balance, rate and payoff date.
+    const start = nextDue.value && nextDue.value > today ? nextDue.value : today;
+    const left = maturity.value ? Math.max(1, monthsBetween(start, maturity.value) + 1) : null;
+    const computed = rate.value != null && left ? round2(pmt(balance, rate.value, left)) : null;
+    const total = p.next_payment ?? observed; // what you actually pay each month
+    // Without escrow (anything but a mortgage) what you actually pay is the P&I,
+    // and it beats a calculation, which can't know you already pay a little extra.
+    let pi = u.payment != null ? { value: u.payment, source: 'you' }
+      : p.kind !== 'mortgage' && kindOf(a, p) !== 'mortgage' && total != null ? { value: total, source: p.next_payment != null ? 'bank' : 'payments' }
+      : computed != null ? { value: computed, source: 'calculated' }
+      : { value: null, source: null };
+    const escrow = u.escrow != null ? { value: u.escrow, source: 'you' }
+      : p.kind === 'mortgage' && total != null && pi.value != null && total - pi.value > 1 ? { value: round2(total - pi.value), source: 'calculated' }
+      : { value: null, source: null };
+    const missing = [rate.value == null && 'interest rate', pi.value == null && 'monthly payment'].filter(Boolean);
+    return {
+      account_id: a.account_id, name: acctNameOf(a), institution: a.institution_name, manual: a.manual,
+      kind: kindOf(a, p),
+      from_bank: !!p.kind, balance,
+      rate, payment: pi, escrow, maturity_date: maturity, next_due_date: nextDue,
+      total_payment: total, total_payment_source: p.next_payment != null ? 'bank' : observed != null ? 'payments' : null,
+      original_principal: pick(u.original_principal, p.original_principal),
+      origination_date: pick(u.origination_date, p.origination_date),
+      loan_type: p.loan_type ?? null, rate_type: p.rate_type ?? null, loan_term: p.loan_term ?? null,
+      escrow_balance: p.escrow_balance ?? null, has_pmi: p.has_pmi ?? null, has_prepayment_penalty: p.has_prepayment_penalty ?? null,
+      past_due: p.past_due ?? null, ytd_interest: p.ytd_interest ?? null, ytd_principal: p.ytd_principal ?? null,
+      payments: paid.slice(0, 12).map((t) => ({ date: t.date, amount: round2(-t.amount) })),
+      mine: u, missing,
+    };
+  });
+  const status = itemList
+    .filter((i) => accounts.some((a) => a.item_id === i.item_id && a.type === 'loan' && !a.manual))
+    .map((i) => ({ institution: i.institution_name, status: liabilityStatus.has(i.item_id) ? liabilityStatus.get(i.item_id) : i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null }));
+  res.json({ today, loans, status });
+});
+
+const LOAN_FIELDS = { rate: 'pct', payment: 'money', escrow: 'money', maturity_date: 'date', next_due_date: 'date', original_principal: 'money', origination_date: 'date' };
+app.put('/api/loans/:id', async (req, res) => {
+  const a = (await store.listAccounts()).find((x) => x.account_id === req.params.id);
+  if (!a || a.type !== 'loan') return res.status(404).json({ error_message: 'Unknown loan' });
+  const out = {};
+  for (const [k, kind] of Object.entries(LOAN_FIELDS)) {
+    const v = req.body?.[k];
+    if (v === undefined || v === null || v === '') continue;
+    if (kind === 'date') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) return res.status(400).json({ error_message: `${k} must be a date (YYYY-MM-DD)` });
+      out[k] = v;
+    } else {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || (kind === 'pct' && n > 100) || n > 1e8) return res.status(400).json({ error_message: `${k} must be a number${kind === 'pct' ? ' from 0 to 100' : ''}` });
+      out[k] = kind === 'pct' ? Math.round(n * 1000) / 1000 : round2(n);
+    }
+  }
   await store.setCardSettings(req.params.id, Object.keys(out).length ? out : null);
   res.json({ ok: true, details: out });
 });
@@ -1655,6 +1800,15 @@ app.get('/api/alerts', async (_req, res) => {
     const label = what.length === 1 ? what[0] : 'more details';
     add(`consent:${consent.map((i) => i.item_id).sort().join(',')}`, 'warning', today,
       b(consent.map((i) => i.institution_name).join(', ')), ` ${consent.length > 1 ? 'need' : 'needs'} your OK to share ${label}. Click “Share” next to ${consent.length > 1 ? 'each bank' : 'it'} in the accounts list.`);
+  }
+  // Connections whose permission runs out soon: reconnecting renews it.
+  for (const item of allItems) {
+    const days = expiresInDays(item);
+    if (days == null || days > EXPIRY_WARN_DAYS()) continue;
+    const when = new Date(item.consent_expires_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    add(`expiry:${item.item_id}:${isoDate(new Date(item.consent_expires_at))}`, days <= 7 ? 'critical' : 'warning', today, b(item.institution_name),
+      days <= 0 ? '’s connection has expired, so it no longer updates. Click “reconnect” next to it in the accounts list.'
+        : `’s connection expires in ${days} day${days === 1 ? '' : 's'} (${when}). Click “reconnect” next to it in the accounts list to renew it.`);
   }
   for (const item of allItems) {
     if (item.error === CONSENT_NEEDED) continue;

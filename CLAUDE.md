@@ -32,6 +32,14 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
   - **Shortfalls:** savings is only suggested, never planned. Taxable brokerage is suggested only above `CARD_PLAN_INVEST_THRESHOLD` (25k) of card debt. Retirement accounts are never suggested.
   - **Defaults:** the buffer is per browser (`localStorage`, passed as `?buffer=`), with `CARD_PLAN_BUFFER` (500) as the default. A missing APR uses `CARD_PLAN_DEFAULT_APR` (24) and is shown as "assumed".
   - **Consent:** new link tokens request `additional_consented_products: [investments, liabilities]`, retrying with fewer when a product isn't enabled. Every "reconnect" (update mode) asks for both too, with `update.account_selection_enabled` so newly opened accounts can be added.
+- **Credit limits:** `accounts.credit_limit` holds Plaid's `balances.limit`, with `card_settings.credit_limit` as a fallback. Utilization is a card's balance ÷ limit; over 30% is flagged with a label. Card interest comes from Liabilities `aprs[].interest_charge_amount` (last statement) and from Finance Charge transactions (this year).
+- **Loans** (`/api/loans`, Loans tab):
+  - **Sources:** `syncLiabilities()` also stores mortgage and student loan details in `card_statements` (`kind: 'mortgage' | 'student'`; credit rows are `kind: 'credit'`). Plaid has no data for car or personal loans. Your entries go in `card_settings`, keyed by account.
+  - **Labels:** every value carries `source` (`bank` / `you` / `calculated` / `payments`). Show it, so nothing estimated looks exact.
+  - **Principal & interest:** yours first. Otherwise, for loans without escrow, the bank's or observed payment (the median of the last 3 payments arriving on the loan account). Otherwise it's calculated from balance, rate and payoff date. Mortgage escrow = total payment − P&I.
+  - **Schedule and what-ifs:** `amortize()` in `app.js` builds the schedule client-side, with an extra amount each month from a given month and one-time payments. What-if inputs are per browser (`localStorage`).
+- **Connection expiry:** `syncItem` calls `/item/get` and stores `consent_expiration_time` in `items.consent_expires_at`. Within `CONSENT_WARN_DAYS` (30) of it, the bank gets a "reconnect" button and an alert (critical within 7 days).
+- **Schema changes** are `ALTER TABLE … ADD COLUMN IF NOT EXISTS` entries in `SCHEMA` (one per statement). Inserts name their columns, so adding a column never breaks them.
 - **Account names:** `displayName()` in `server.js`: your nickname, then the bank's `official_name` when the name is generic or all caps, then "<Bank> <Name>". The UI shows `display_name`, never the raw `name`.
 
 ## Plaid conventions
