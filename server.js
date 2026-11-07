@@ -67,7 +67,7 @@ const items = {
 
 const app = express();
 app.set('trust proxy', 1);
-app.use(express.json({ limit: '5mb' })); // CSV imports can be thousands of rows
+app.disable('x-powered-by'); // don't advertise the framework
 
 // ------------------------------------------------------------------- auth --
 // HTTP Basic Auth (any username, password = APP_PASSWORD). Render serves over HTTPS.
@@ -99,6 +99,23 @@ app.use((_req, res, next) => {
   next();
 });
 
+// Requests that change data must come from this app's own pages. The browser
+// sends the saved password with any request to this site, so without this a
+// page elsewhere could try to make changes on your behalf (CSRF).
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+app.use((req, res, next) => {
+  if (SAFE_METHODS.has(req.method)) return next();
+  const site = req.get('sec-fetch-site');
+  if (site && site !== 'same-origin' && site !== 'none') return res.status(403).json({ error_message: 'Cross-site request blocked' });
+  const origin = req.get('origin');
+  if (origin) {
+    let host = null;
+    try { host = new URL(origin).host; } catch { /* malformed */ }
+    if (host !== req.get('host')) return res.status(403).json({ error_message: 'Cross-site request blocked' });
+  }
+  next();
+});
+
 app.get('/healthz', (_req, res) => res.send('ok'));
 
 // Icons are served without auth: browsers and iOS home screens fetch them
@@ -113,6 +130,11 @@ app.get(PUBLIC_ICONS, (req, res) => {
 const MAX_FAILURES = 10;
 const LOCKOUT_MS = 15 * 60 * 1000;
 const failures = new Map(); // ip -> { count, first }
+// Forget expired lockouts, so addresses that never come back don't pile up.
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, r] of failures) if (now - r.first > LOCKOUT_MS) failures.delete(ip);
+}, LOCKOUT_MS).unref();
 app.use((req, res, next) => {
   if (!APP_PASSWORD) return next();
   const now = Date.now();
@@ -134,6 +156,9 @@ app.use((req, res, next) => {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
+// Bodies are parsed only after the password check, so nobody can make the
+// server parse large uploads without signing in.
+app.use(express.json({ limit: '5mb' })); // CSV imports can be thousands of rows
 
 // The server listens before the database is ready (so Render's port check passes);
 // API calls get a 503 until the schema is in place.
