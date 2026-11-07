@@ -41,5 +41,13 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await page.goto(`${api.base}/#loans`);
   await page.waitForTimeout(800);
   assert.match(await page.locator('.loan', { hasText: 'Auto Loan' }).innerText(), /Add the interest rate to see the payoff schedule/);
+  // The alert's "Add it" opens that loan's dialog with the rate marked as needed.
+  await page.goto(`${api.base}/#overview`);
+  await page.waitForTimeout(1200);
+  await page.locator('#alerts li', { hasText: 'Auto Loan' }).getByRole('button', { name: 'Add it' }).click();
+  await page.waitForSelector('#loan-dialog[open]', { timeout: 5000 });
+  assert.equal(await page.locator('#loan-dialog .field.needed input[name=rate]').count(), 1);
+  assert.equal(await page.evaluate(() => document.activeElement?.name), 'rate');
+  assert.equal(await page.evaluate(() => location.hash), '#loans');
   assert.deepEqual(errors, []);
 });

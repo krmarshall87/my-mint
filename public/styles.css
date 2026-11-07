@@ -480,3 +480,10 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .whatif-inputs .field.wide input { border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; background: var(--bg); color: var(--text); font: inherit; }
 .whatif-inputs .hint { font-size: 11px; }
 .schedule tr.next-row td { background: color-mix(in srgb, var(--warning) 22%, transparent); font-weight: 600; }
+/* Prompts for details only you can add. */
+.dialog .field.needed input { border-color: var(--warning); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 35%, transparent); }
+.dialog .field.needed::after { content: "Needed"; font-size: 11px; font-weight: 600; color: var(--warn); }
+.note-box.ask { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; }
+.note-box.ask p { margin: 0; flex: 1 1 280px; }
+.link-btn.attention { font-weight: 600; color: var(--warn); white-space: nowrap; }
+.link-btn.attention::before { content: "⚠ "; }

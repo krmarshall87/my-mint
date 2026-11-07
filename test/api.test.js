@@ -134,6 +134,18 @@ for (const store of stores) {
       assert.equal(mortgage.ytd_interest, 13900);
     });
 
+    await t.test('missing details are asked for in alerts', async () => {
+      const alerts = (await api.get('/api/alerts')).body;
+      const car = alerts.find((a) => a.id.startsWith('missing:car:'));
+      assert.ok(car, 'car loan alert');
+      assert.match(car.parts.map((p) => p.t).join(''), /missing its interest rate/);
+      assert.deepEqual(car.parts.at(-1), { t: 'Add it', action: 'edit-loan', account_id: 'car' });
+      // Discover has no limit from the bank.
+      const disc = alerts.find((a) => a.id.startsWith('missing:disc:'));
+      assert.ok(disc && disc.parts.at(-1).action === 'edit-card');
+      assert.ok(!alerts.some((a) => a.id.startsWith('missing:mtg:')), 'the mortgage has everything');
+    });
+
     await t.test('a car loan uses the payment from history and asks for the rate', async () => {
       assert.equal(car.payment.value, 450);
       assert.equal(car.payment.source, 'payments');
@@ -141,6 +153,7 @@ for (const store of stores) {
       assert.equal((await api.put('/api/loans/car', { rate: 170 })).status, 400);
       assert.equal((await api.put('/api/loans/car', { rate: 7.49, maturity_date: '2030-11-01' })).status, 200);
       const updated = (await api.get('/api/loans')).body.loans.find((l) => l.account_id === 'car');
+      assert.ok(!(await api.get('/api/alerts')).body.some((a) => a.id.startsWith('missing:car:')), 'alert goes away once added');
       assert.equal(updated.rate.value, 7.49);
       assert.equal(updated.rate.source, 'you');
       assert.equal(updated.payment.value, 450, 'what you actually pay beats a calculation');
