@@ -180,7 +180,8 @@ async function syncItem(item) {
       await store.applySync(item.item_id, { accounts, added, modified, removed, cursor });
       bumpData();
       const investments = await syncInvestments(item, accounts, cursor);
-      return { added: added.length, modified: modified.length, removed: removed.length, ...(investments ? { investments } : {}) };
+      const cards = await syncLiabilities(item, accounts);
+      return { added: added.length, modified: modified.length, removed: removed.length, ...(investments ? { investments } : {}), ...(cards ? { cards } : {}) };
     } catch (err) {
       const code = err.response?.data?.error_code;
       if (code === 'TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION') continue; // restart from startCursor
@@ -225,12 +226,29 @@ app.post('/api/link-token', async (req, res) => {
       const item = await items.get(itemId);
       if (!item) return res.status(404).json({ error_message: 'Unknown item' });
       request.access_token = item.access_token;
-      if (item.error === CONSENT_NEEDED) request.additional_consented_products = [Products.Investments];
+      if (item.error === CONSENT_NEEDED) request.additional_consented_products = consentNeeded(item.item_id);
     } else {
       request.products = [Products.Transactions];
       request.transactions = { days_requested: 730 };
+      // Ask up front, so holdings and card statements don't need a second OK later.
+      request.additional_consented_products = [Products.Investments, Products.Liabilities];
     }
-    const { data } = await plaid.linkTokenCreate(request);
+    // A product that isn't enabled on the Plaid account fails the whole request,
+    // so try with fewer extra products. (Creating a link token changes nothing.)
+    const extras = request.additional_consented_products || [];
+    const attempts = [extras, ...extras.map((p) => [p]), []].filter((a, i, all) => all.findIndex((b) => b.join() === a.join()) === i);
+    let data, lastErr;
+    for (const products of attempts) {
+      try {
+        if (products.length) request.additional_consented_products = products; else delete request.additional_consented_products;
+        ({ data } = await plaid.linkTokenCreate(request));
+        break;
+      } catch (err) {
+        lastErr = err;
+        if (!products.length) throw err;
+      }
+    }
+    if (!data) throw lastErr;
     res.json({ link_token: data.link_token });
   } catch (err) {
     console.error('link-token', plaidError(err));
@@ -934,12 +952,59 @@ async function syncInvestments(item, accounts, cursor) {
     bumpData();
     return { holdings: h.holdings.length, activity: txns.length };
   } catch (err) {
-    const code = err.response?.data?.error_code || err.message;
-    investmentStatus.set(item.item_id, code);
-    // The bank wants your OK before sharing investment details: "reconnect" asks for it.
-    if (code === CONSENT_NEEDED) await store.setItemError(item.item_id, CONSENT_NEEDED);
-    else console.error('investments', item.institution_name, code);
-    return { error: code };
+    return productError(item, investmentStatus, 'investments', err);
+  }
+}
+
+// Optional products (Investments, Liabilities) fail on their own without
+// breaking the sync. The bank may want your OK first: "reconnect" asks for it.
+async function productError(item, statusMap, label, err) {
+  const code = err.response?.data?.error_code || err.message;
+  statusMap.set(item.item_id, code);
+  if (code === CONSENT_NEEDED) await store.setItemError(item.item_id, CONSENT_NEEDED);
+  else console.error(label, item.institution_name, code);
+  return { error: code };
+}
+
+// Which products "reconnect" should ask consent for (both if we don't know, e.g. after a restart).
+function consentNeeded(itemId) {
+  const out = [];
+  if (investmentStatus.get(itemId) === CONSENT_NEEDED) out.push(Products.Investments);
+  if (liabilityStatus.get(itemId) === CONSENT_NEEDED) out.push(Products.Liabilities);
+  return out.length ? out : [Products.Investments, Products.Liabilities];
+}
+function consentLabel(itemId) {
+  const inv = investmentStatus.get(itemId) === CONSENT_NEEDED, card = liabilityStatus.get(itemId) === CONSENT_NEEDED;
+  if (inv && !card) return 'investment details (holdings and activity)';
+  if (card && !inv) return 'credit card statements (balances, due dates and APRs)';
+  return 'investment details and credit card statements';
+}
+
+// ---------------------------------------------------------- liabilities --
+// Credit card statements (statement balance, due date, minimum, APRs) from
+// Plaid's Liabilities product, only for banks with credit cards.
+const liabilityStatus = new Map(); // item_id -> null (ok) or a Plaid error code
+
+async function syncLiabilities(item, accounts) {
+  if (!accounts.some((a) => a.type === 'credit')) return null;
+  try {
+    const { data } = await plaid.liabilitiesGet({ access_token: item.access_token });
+    const rows = (data.liabilities?.credit || []).filter((c) => c.account_id).map((c) => ({
+      account_id: c.account_id,
+      statement_balance: c.last_statement_balance ?? null,
+      statement_date: c.last_statement_issue_date ?? null,
+      due_date: c.next_payment_due_date ?? null,
+      minimum_payment: c.minimum_payment_amount ?? null,
+      last_payment_amount: c.last_payment_amount ?? null,
+      last_payment_date: c.last_payment_date ?? null,
+      is_overdue: c.is_overdue ?? null,
+      aprs: (c.aprs || []).map((a) => ({ type: a.apr_type, apr: a.apr_percentage, balance: a.balance_subject_to_apr ?? null })),
+    }));
+    await store.replaceCardStatements(item.item_id, rows);
+    liabilityStatus.set(item.item_id, null);
+    return { statements: rows.length };
+  } catch (err) {
+    return productError(item, liabilityStatus, 'liabilities', err);
   }
 }
 
@@ -961,7 +1026,7 @@ app.get('/api/investments', async (_req, res) => {
   });
   const status = itemList
     .filter((i) => invAccounts.some((a) => a.item_id === i.item_id))
-    .map((i) => ({ item_id: i.item_id, institution: i.institution_name, status: investmentStatus.get(i.item_id) ?? (i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null) }));
+    .map((i) => ({ item_id: i.item_id, institution: i.institution_name, status: investmentStatus.has(i.item_id) ? investmentStatus.get(i.item_id) : i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null }));
   res.json({
     accounts: out,
     value: round2(value),
@@ -1182,6 +1247,7 @@ async function detectRecurring() {
         overdue: next < today,
         occurrences: txns.length,
         account: a ? acctNameOf(a) : null,
+        account_id: last.account_id,
         history: txns.slice(-6).map((t) => ({ date: t.date, amount: t.amount })),
       });
     }
@@ -1205,6 +1271,363 @@ app.get('/api/recurring', async (req, res) => {
   });
 });
 
+// ------------------------------------------------------- expected income --
+// Paychecks found the same way as bills: deposits into checking, in an Income
+// category, grouped by payer, on a regular rhythm. Twice a month (the 1st and
+// 15th) is found from the days of the month, since the gaps alone look like
+// every 2 weeks.
+function semimonthly(txns) {
+  if (txns.length < 4) return null;
+  const gaps = txns.slice(1).map((t, i) => dayNum(t.date) - dayNum(txns[i].date));
+  if (median(gaps) < 12 || median(gaps) > 18) return null;
+  const days = txns.slice(-6).map((t) => Number(t.date.slice(8, 10))).sort((a, b) => a - b);
+  const groups = [];
+  for (const d of days) { const g = groups.find((x) => Math.abs(x[0] - d) <= 3); if (g) g.push(d); else groups.push([d]); }
+  if (groups.length !== 2 || groups.some((g) => g.length < 2)) return null;
+  return groups.map((g) => Math.round(median(g)));
+}
+
+function nextOnDays(date, days) {
+  // The next date after `date` falling on one of these days of the month.
+  const [y, m] = date.split('-').map(Number);
+  for (let k = 0; k < 3; k++) {
+    for (const d of days) {
+      const last = new Date(Date.UTC(y, m - 1 + k + 1, 0)).getUTCDate();
+      const c = new Date(Date.UTC(y, m - 1 + k, Math.min(d, last))).toISOString().slice(0, 10);
+      if (c > date) return c;
+    }
+  }
+  return null;
+}
+
+async function detectIncome(accountIds) {
+  const today = isoDate(new Date());
+  const groups = new Map();
+  for (const t of await categorizedTransactions()) {
+    if (t.amount >= 0 || t.pending || t.excluded || !isIncome(t.category) || !accountIds.has(t.account_id)) continue;
+    const key = (t.display_name || merchantKey(t) || t.name || '').toLowerCase();
+    if (!key) continue;
+    const l = groups.get(key) || [];
+    l.push({ ...t, amount: -t.amount });
+    groups.set(key, l);
+  }
+  const out = [];
+  for (const all of groups.values()) {
+    const series = all.sort((a, b) => a.date.localeCompare(b.date));
+    const found = cadence(series) || semimonthly(series) ? [series] : amountClusters(series).filter((c) => cadence(c));
+    for (const txns of found) {
+      const last = txns[txns.length - 1];
+      const semi = semimonthly(txns);
+      const f = semi ? { key: 'semimonthly', label: 'Twice a month', days: 15.22, tol: 4 } : cadence(txns);
+      if (!f || f.key === 'yearly' || f.key === 'quarterly') continue;
+      if (dayNum(today) - dayNum(last.date) > f.days * 1.5 + f.tol) continue; // stopped
+      out.push({
+        name: last.display_name || last.merchant_name || last.name,
+        frequency: f.key, frequency_label: f.label,
+        amount: round2(median(txns.slice(-3).map((t) => t.amount))),
+        last_date: last.date,
+        next: (d) => (semi ? nextOnDays(d, semi) : addPeriod(d, f)),
+      });
+    }
+  }
+  return out;
+}
+
+// ------------------------------------------------------ credit card plan --
+// Checking (all checking accounts together) pays the bills due before each
+// card's due date, keeps a buffer, and the rest goes to the cards: first every
+// minimum, then statement balances, highest APR first (a 0% promo last).
+// Paychecks arriving before a due date count toward that card.
+const CHECKING_SUBTYPES = new Set(['checking', 'cash management', 'prepaid', 'paypal']);
+const SAVINGS_SUBTYPES = new Set(['savings', 'money market']);
+const TAXABLE_INVESTMENT_SUBTYPES = new Set(['brokerage', 'mutual fund', 'stock plan', 'non-taxable brokerage account']);
+const PLAN_BUFFER = () => Number(process.env.CARD_PLAN_BUFFER || 500);
+const DEFAULT_APR = () => Number(process.env.CARD_PLAN_DEFAULT_APR || 24);
+const INVEST_THRESHOLD = () => Number(process.env.CARD_PLAN_INVEST_THRESHOLD || 25000);
+const MAX_HORIZON = 45;
+
+function cashKind(a) {
+  if (a.type !== 'depository') return null;
+  const sub = (a.subtype || '').toLowerCase();
+  if (SAVINGS_SUBTYPES.has(sub) || (!sub && /saving|money market/i.test(`${a.name} ${a.display_name}`))) return 'savings';
+  if (CHECKING_SUBTYPES.has(sub) || !sub) return 'checking';
+  return null; // CDs, HSAs: not spending money
+}
+
+const isCardPayment = (t) => t.category === 'Credit Card Payment' || t.category_detailed === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' || t.parent === 'Transfer';
+
+// The card's details: Plaid's statement unless yours is newer; your APR and promo win.
+function cardDetails(a, st, us, today) {
+  const mine = us.statement_date && (!st?.statement_date || us.statement_date > st.statement_date);
+  const src = mine ? us : st || {};
+  const purchase = st?.aprs?.find((x) => x.type === 'purchase_apr');
+  const plaidApr = purchase?.apr ?? (st?.aprs?.length ? Math.max(...st.aprs.map((x) => x.apr ?? 0)) : null);
+  const promoActive = us.promo_apr != null && (!us.promo_end || us.promo_end >= today);
+  const regularApr = us.apr ?? (plaidApr || null);
+  return {
+    source: mine ? 'you' : st ? 'plaid' : null,
+    statement_balance: src.statement_balance ?? null,
+    statement_date: src.statement_date ?? null,
+    due_date: src.due_date ?? us.due_date ?? null,
+    minimum_payment: src.minimum_payment ?? us.minimum_payment ?? null,
+    last_payment_amount: st?.last_payment_amount ?? null,
+    last_payment_date: st?.last_payment_date ?? null,
+    aprs: st?.aprs || [],
+    apr: promoActive ? us.promo_apr : regularApr ?? (plaidApr === 0 ? 0 : null),
+    regular_apr: regularApr,
+    promo: promoActive ? { apr: us.promo_apr, end: us.promo_end || null } : plaidApr === 0 && us.apr == null ? { apr: 0, end: null, from_plaid: true } : null,
+  };
+}
+
+async function cardPlan({ buffer }) {
+  const today = isoDate(new Date());
+  const [accounts, statements, settings, txns, bills, holdings] = await Promise.all([
+    listAccounts(), store.listCardStatements(), store.listCardSettings(), categorizedTransactions(), detectRecurring(), store.listHoldings(),
+  ]);
+  const st = new Map(statements.map((x) => [x.account_id, x]));
+  const us = new Map(settings.map((x) => [x.account_id, x]));
+  const checking = accounts.filter((a) => cashKind(a) === 'checking');
+  const savings = accounts.filter((a) => cashKind(a) === 'savings');
+  const checkingIds = new Set(checking.map((a) => a.account_id));
+  const cash = round2(checking.reduce((s, a) => s + (a.available_balance ?? a.current_balance ?? 0), 0));
+
+  // Cards and what's still owed on each statement.
+  const cards = accounts.filter((a) => a.type === 'credit').map((a) => {
+    const d = cardDetails(a, st.get(a.account_id), us.get(a.account_id) || {}, today);
+    const paidTx = d.statement_date
+      ? txns.filter((t) => t.account_id === a.account_id && t.amount < 0 && t.date > d.statement_date && isCardPayment(t)).reduce((s, t) => s - t.amount, 0)
+      : 0;
+    // A payment Plaid knows about that isn't in the card's transactions yet.
+    const paid = round2(paidTx || (d.last_payment_date && d.statement_date && d.last_payment_date > d.statement_date ? d.last_payment_amount || 0 : 0));
+    const remaining = d.statement_balance == null ? null : round2(Math.max(0, d.statement_balance - paid));
+    const minimum = remaining == null ? null : round2(Math.min(remaining, Math.max(0, (d.minimum_payment ?? Math.max(35, remaining * 0.02)) - paid)));
+    const aprAssumed = d.apr == null;
+    return {
+      account_id: a.account_id, name: acctNameOf(a), institution: a.institution_name, manual: a.manual, mine: us.get(a.account_id) || null,
+      balance: a.current_balance, ...d, paid_since_statement: paid, remaining,
+      minimum, minimum_estimated: d.minimum_payment == null && remaining != null,
+      apr: aprAssumed ? DEFAULT_APR() : d.apr, apr_assumed: aprAssumed,
+      overdue: remaining > 0 && d.due_date != null && d.due_date < today,
+      needs_details: d.statement_balance == null || d.due_date == null,
+      promo_ending: d.promo?.end && d.promo.end <= fromDayNum(dayNum(today) + MAX_HORIZON) ? d.promo.end : null,
+    };
+  });
+
+  // Days from today to the last due date we're planning for (at least 30).
+  const planned = cards.filter((c) => !c.needs_details && c.remaining > 0);
+  const lastDue = planned.reduce((m, c) => (c.due_date > m ? c.due_date : m), today);
+  const H = Math.min(MAX_HORIZON, Math.max(30, dayNum(lastDue) - dayNum(today)));
+  const end = fromDayNum(dayNum(today) + H);
+  // Payments are planned up to `end`; bills and paychecks are projected a month
+  // further, so a payment never takes money next month's bills need.
+  const HB = H + 31;
+  const through = fromDayNum(dayNum(today) + HB);
+  const idx = (date) => Math.max(0, Math.min(HB, dayNum(date) - dayNum(today)));
+
+  // Bills paid from checking (credit card payments are what we're planning) and paychecks.
+  const events = [];
+  for (const b of bills) {
+    if (b.card_payment || !checkingIds.has(b.account_id)) continue;
+    let d = b.next_date;
+    if (d < daysAgo(5)) continue; // well overdue: probably stopped or paid some other way
+    for (let n = 0; d <= through && n < 20; n++) {
+      events.push({ date: d < today ? today : d, type: 'bill', name: b.name, amount: -b.amount, variable: b.variable });
+      d = addPeriod(d, FREQUENCIES.find((f) => f.key === b.frequency));
+    }
+  }
+  const income = await detectIncome(checkingIds);
+  for (const p of income) {
+    let d = p.next(p.last_date);
+    for (let n = 0; d && d <= through && n < 20; n++) {
+      if (d >= daysAgo(3)) events.push({ date: d < today ? today : d, type: 'income', name: p.name, amount: p.amount });
+      d = p.next(d);
+    }
+  }
+  events.sort((x, y) => x.date.localeCompare(y.date) || y.amount - x.amount);
+
+  // Projected checking balance at the end of each day, before card payments.
+  const bal = Array.from({ length: HB + 1 }, () => cash);
+  for (const e of events) for (let i = idx(e.date); i <= HB; i++) bal[i] += e.amount;
+  // The most that can go out on day t without dipping below the buffer later.
+  const capacity = (t) => Math.max(0, Math.min(...bal.slice(t)) - buffer);
+  const payments = [];
+  const dueDay = (c) => idx(fromDayNum(Math.max(dayNum(today), dayNum(c.due_date) - 2))); // ~2 days for the payment to post
+  const book = (c, t, amt, kind) => {
+    for (let i = t; i <= HB; i++) bal[i] -= amt;
+    payments.push({ account_id: c.account_id, day: t, amount: amt, kind });
+  };
+  const pay = (c, want, kind) => {
+    if (want <= 0.005) return 0;
+    const t = dueDay(c);
+    const amt = round2(Math.min(want, capacity(t)));
+    if (amt <= 0) return 0;
+    book(c, t, amt, kind);
+    return amt;
+  };
+  // After the due date: still worth paying as soon as a paycheck makes room,
+  // since interest builds every day the balance is carried.
+  const payLate = (c, want) => {
+    let left = round2(want), total = 0;
+    for (let t = dueDay(c) + 1; t <= H && left > 0.005; t++) {
+      const amt = round2(Math.min(left, capacity(t)));
+      if (amt <= 0.005) continue;
+      book(c, t, amt, 'extra');
+      left = round2(left - amt); total += amt;
+    }
+    return round2(total);
+  };
+
+  // 1. Every minimum, soonest due first (no late fees, no penalty APR).
+  for (const c of [...planned].sort((x, y) => x.due_date.localeCompare(y.due_date))) c.pay = pay(c, c.minimum, 'minimum');
+  // 2. The rest of each statement, highest APR first (a promo about to end counts
+  //    as the highest). 3. Whatever couldn't be paid by the due date, as soon as
+  //    there's room. 4. Statements on a 0% promo last: only the minimum is needed.
+  const onPromo = (c) => c.promo && !c.promo_ending;
+  const byApr = (list) => [...list].sort((x, y) => (y.promo_ending ? 1000 : y.apr) - (x.promo_ending ? 1000 : x.apr) || x.due_date.localeCompare(y.due_date));
+  const interestBearing = byApr(planned.filter((c) => !onPromo(c)));
+  for (const c of interestBearing) c.pay = round2(c.pay + pay(c, c.remaining - c.pay, 'statement'));
+  // A missed minimum is the worst outcome (late fee, penalty APR), so catch those up first.
+  for (const c of [...planned].sort((x, y) => x.due_date.localeCompare(y.due_date))) c.pay_late = payLate(c, c.minimum - c.pay);
+  for (const c of interestBearing) c.pay_late = round2(c.pay_late + payLate(c, c.remaining - c.pay - c.pay_late));
+  for (const c of planned.filter(onPromo).sort((x, y) => x.due_date.localeCompare(y.due_date))) c.pay = round2(c.pay + pay(c, c.remaining - c.pay, 'statement'));
+
+  // When the money for each payment is there: today, or after a paycheck.
+  const incomeDays = events.filter((e) => e.type === 'income');
+  for (const c of cards) {
+    c.pay ??= 0;
+    c.pay_late ??= 0;
+    c.unpaid = c.remaining == null ? null : round2(c.remaining - c.pay); // not paid by the due date
+    const apr = c.promo && !c.promo_ending ? c.promo.apr : c.promo_ending ? c.regular_apr ?? DEFAULT_APR() : c.apr;
+    // Carrying a balance costs interest on it (and ends the grace period on new
+    // purchases). Late payments cut that: interest only for the days until they're paid.
+    const daily = apr / 36500;
+    c.interest_if_unpaid = c.remaining ? round2((c.remaining * apr) / 1200) : 0;
+    const late = payments.filter((p) => p.account_id === c.account_id && p.kind === 'extra');
+    const dueAt = c.due_date ? dayNum(c.due_date) : 0;
+    c.interest_cost = c.unpaid
+      ? round2((c.unpaid - c.pay_late) * apr / 1200 + late.reduce((s, p) => s + p.amount * daily * Math.max(0, dayNum(today) + p.day - dueAt), 0))
+      : 0;
+    c.pay_by = c.remaining > 0 ? c.due_date : null;
+    c.payments = Object.values(payments.filter((p) => p.account_id === c.account_id).reduce((m, p) => {
+      const date = fromDayNum(dayNum(today) + p.day), k = `${date}|${p.kind === 'extra'}`;
+      m[k] ||= { date, amount: 0, late: p.kind === 'extra' };
+      m[k].amount = round2(m[k].amount + p.amount);
+      return m;
+    }, {})).sort((x, y) => x.date.localeCompare(y.date));
+    const mine = payments.filter((p) => p.account_id === c.account_id && p.kind !== 'extra');
+    if (mine.length) {
+      const t = Math.max(...mine.map((p) => p.day));
+      // Earliest day it could go out instead: moving it earlier takes it out of
+      // those days' balances too, and none may dip below the buffer.
+      let from = t;
+      while (from > 0 && bal[from - 1] - c.pay >= buffer - 0.005) from--;
+      c.pay_from = fromDayNum(dayNum(today) + from);
+      const paycheck = [...incomeDays].reverse().find((e) => idx(e.date) <= from && idx(e.date) > 0);
+      c.funded_by = from === 0 || !paycheck ? 'checking' : { name: paycheck.name, date: paycheck.date };
+    }
+  }
+
+  const totalDue = round2(planned.reduce((s, c) => s + c.remaining, 0));
+  const totalPay = round2(cards.reduce((s, c) => s + c.pay, 0));
+  const totalLate = round2(cards.reduce((s, c) => s + c.pay_late, 0));
+  const unpaid = round2(Math.max(0, totalDue - totalPay)); // not paid by the due dates
+  const minShort = round2(planned.reduce((s, c) => s + Math.max(0, c.minimum - c.pay), 0));
+  const cardDebt = round2(cards.reduce((s, c) => s + Math.max(0, c.balance || 0), 0));
+  const interest = round2(cards.reduce((s, c) => s + c.interest_cost, 0));
+
+  // Lowest point of checking, and when. Below the buffer means the bills alone don't fit.
+  const lowDay = bal.indexOf(Math.min(...bal));
+  const belowBuffer = round2(Math.max(0, buffer - bal[lowDay]));
+  const missedMinimums = planned.filter((c) => c.pay < c.minimum - 0.005);
+
+  // If checking falls short: savings first, investments only with a lot of card debt.
+  // Enough to keep the buffer, make every minimum on time and pay the
+  // interest-bearing statements in full (a 0% promo only needs its minimum).
+  const suggestions = [];
+  const savingsTotal = round2(savings.reduce((s, a) => s + Math.max(0, a.available_balance ?? a.current_balance ?? 0), 0));
+  let gap = round2(belowBuffer + planned.reduce((s, c) => s + Math.max(0, onPromo(c) ? c.minimum - c.pay : c.remaining - c.pay), 0));
+  // Interest avoided by money put on the unpaid balances, highest APR first (shared, so it isn't counted twice).
+  const owed = cards.filter((x) => x.unpaid > 0 && x.interest_cost > 0).map((c) => ({ left: c.unpaid, rate: c.interest_cost / c.unpaid })).sort((x, y) => y.rate - x.rate);
+  const saved = (amount) => {
+    let left = amount, out = 0;
+    for (const o of owed) { const take = Math.min(left, o.left); out += take * o.rate; o.left -= take; left -= take; }
+    return round2(out);
+  };
+  if (gap > 0 && savingsTotal > 0) {
+    const amount = round2(Math.min(gap, savingsTotal));
+    suggestions.push({ type: 'savings', amount, interest_saved: saved(amount), accounts: savings.map((a) => acctNameOf(a)) });
+    gap = round2(gap - amount);
+  }
+  const taxable = accounts.filter((a) => a.type === 'investment' && TAXABLE_INVESTMENT_SUBTYPES.has((a.subtype || '').toLowerCase()));
+  const taxableTotal = round2(taxable.reduce((s, a) => s + Math.max(0, a.current_balance || 0), 0));
+  if (gap > 0 && cardDebt > INVEST_THRESHOLD() && taxableTotal > 0) {
+    const amount = round2(Math.min(gap, taxableTotal));
+    suggestions.push({ type: 'investments', amount, interest_saved: saved(amount), accounts: taxable.map((a) => acctNameOf(a)) });
+  }
+
+  // The cash timeline, with the planned payments.
+  const timeline = [
+    ...events,
+    ...cards.flatMap((c) => c.payments.map((p) => ({ date: p.date, type: 'card', name: c.name, amount: -p.amount, late: p.late }))),
+  ].sort((x, y) => x.date.localeCompare(y.date) || y.amount - x.amount);
+  let run = cash;
+  for (const e of timeline) { run = round2(run + e.amount); e.balance = run; }
+  const lowest = round2(Math.min(...bal));
+
+  cards.sort((x, y) => (x.needs_details - y.needs_details) || (x.due_date || '9').localeCompare(y.due_date || '9'));
+  return {
+    today, end, through, buffer,
+    checking: { total: cash, accounts: checking.map((a) => ({ name: acctNameOf(a), balance: a.available_balance ?? a.current_balance })) },
+    savings: savingsTotal,
+    income: income.map(({ next, ...p }) => { let d = next(p.last_date); while (d && d < today) d = next(d); return { ...p, next_date: d }; }),
+    totals: {
+      income: round2(events.filter((e) => e.type === 'income').reduce((s, e) => s + e.amount, 0)),
+      bills: round2(-events.filter((e) => e.type === 'bill').reduce((s, e) => s + e.amount, 0)),
+      due: totalDue, pay: totalPay, pay_late: totalLate, unpaid, minimum_short: minShort,
+      interest, card_debt: cardDebt,
+      left_over: round2(Math.max(0, lowest - buffer)),
+      lowest_balance: lowest,
+      lowest_date: fromDayNum(dayNum(today) + lowDay),
+      below_buffer: belowBuffer,
+      missed_minimums: missedMinimums.length,
+    },
+    cards, timeline, suggestions,
+    invest_threshold: INVEST_THRESHOLD(),
+    status: (await store.listItems())
+      .filter((i) => accounts.some((a) => a.item_id === i.item_id && a.type === 'credit') && !accounts.some((a) => a.item_id === i.item_id && a.manual))
+      .map((i) => ({ institution: i.institution_name, status: liabilityStatus.has(i.item_id) ? liabilityStatus.get(i.item_id) : i.error === CONSENT_NEEDED ? CONSENT_NEEDED : null })),
+  };
+}
+
+app.get('/api/card-plan', async (req, res) => {
+  const b = Number(req.query.buffer);
+  res.json(await cardPlan({ buffer: Number.isFinite(b) && b >= 0 && b <= 1e6 ? b : PLAN_BUFFER() }));
+});
+
+// Your own details for a card: APR, a 0% promo, or the statement for a manual card.
+const CARD_FIELDS = { apr: 'pct', promo_apr: 'pct', promo_end: 'date', statement_balance: 'money', statement_date: 'date', due_date: 'date', minimum_payment: 'money' };
+app.put('/api/cards/:id', async (req, res) => {
+  const accounts = await store.listAccounts();
+  const a = accounts.find((x) => x.account_id === req.params.id);
+  if (!a || a.type !== 'credit') return res.status(404).json({ error_message: 'Unknown credit card' });
+  const out = {};
+  for (const [k, kind] of Object.entries(CARD_FIELDS)) {
+    const v = req.body?.[k];
+    if (v === undefined || v === null || v === '') continue;
+    if (kind === 'date') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) return res.status(400).json({ error_message: `${k} must be a date (YYYY-MM-DD)` });
+      out[k] = v;
+    } else {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0 || (kind === 'pct' && n > 100) || n > 1e7) return res.status(400).json({ error_message: `${k} must be a number${kind === 'pct' ? ' from 0 to 100' : ''}` });
+      out[k] = round2(n);
+    }
+  }
+  if (out.statement_balance != null && !out.statement_date) return res.status(400).json({ error_message: 'Add the statement date with the statement balance' });
+  await store.setCardSettings(req.params.id, Object.keys(out).length ? out : null);
+  res.json({ ok: true, details: out });
+});
+
 // ---------------------------------------------------------------- alerts --
 // Computed from the data on each request, so there's nothing to keep in sync.
 const pretty = (c) => (c === 'OTHER' ? 'Other' : c || UNCATEGORIZED);
@@ -1223,7 +1646,7 @@ app.get('/api/alerts', async (_req, res) => {
 
   // Broken bank connections.
   for (const item of await store.listItems()) {
-    if (item.error === CONSENT_NEEDED) add(`item:${item.item_id}:${item.error}`, 'warning', today, b(item.institution_name), ' needs your OK to share investment details (holdings and activity). Click “reconnect” next to it in the accounts list.');
+    if (item.error === CONSENT_NEEDED) add(`item:${item.item_id}:${item.error}`, 'warning', today, b(item.institution_name), ` needs your OK to share ${consentLabel(item.item_id)}. Click “reconnect” next to it in the accounts list.`);
     else if (item.error) add(`item:${item.item_id}:${item.error}`, 'critical', today, b(item.institution_name), ` needs attention (${item.error}). Reconnect it from the accounts list.`);
   }
 

@@ -419,3 +419,40 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .note-box { margin: 0 0 8px; padding: 10px 14px; border: 1px solid var(--border); border-left: 3px solid var(--warning); border-radius: 8px; background: var(--panel); font-size: 13px; }
 .holdings-table td.desc strong { display: block; }
 #inv-accounts, #inv-status { display: grid; gap: 16px; } #inv-status { gap: 8px; } #inv-status:empty { display: none; } #inv-status .note-box { margin: 0; }
+.buffer-line { stroke: var(--warning); stroke-width: 1.5; stroke-dasharray: 5 4; }
+
+/* --------------------------------------------------------- Credit cards -- */
+.summary-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1100px) { .summary-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 600px) { .summary-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.plan-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 14px; }
+.buffer-field { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; }
+.money-input { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 6px; padding: 0 8px; background: var(--bg); }
+.money-input input { width: 6em; border: 0; background: transparent; color: var(--text); font: inherit; font-weight: 400; padding: 6px 0; }
+.money-input:focus-within { outline: 2px solid var(--brand); outline-offset: 1px; }
+#card-status, #card-warnings, #card-suggestions { display: grid; gap: 8px; }
+#card-status:empty, #card-warnings:empty, #card-suggestions:empty { display: none; }
+#card-status .note-box, #card-warnings .note-box, #card-suggestions .note-box { margin: 0; }
+.note-box.critical { border-left-color: var(--critical); }
+.note-box.good { border-left-color: var(--good); }
+.note-box.info { border-left-color: var(--series-1); }
+.plan-table td { vertical-align: top; }
+.plan-table .plan-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; min-width: 13em; }
+.plan-table th, .plan-table td { padding-left: 8px; padding-right: 8px; }
+.plan-table th:first-child, .plan-table td:first-child { padding-left: 14px; }
+.plan-table .plan-steps .sub { display: block; }
+.plan-table td.desc { min-width: 9em; max-width: 14em; }
+.panel-foot { margin: 0; padding: 10px 14px; border-top: 1px solid var(--border); }
+#card-dialog .field-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 600px) { #card-dialog .field-row { grid-template-columns: minmax(0, 1fr); } }
+/* On phones each card is a block, so the plan is never scrolled out of view. */
+@media (max-width: 700px) {
+  .plan-table thead { display: none; }
+  .plan-table, .plan-table tbody, .plan-table td { display: block; }
+  .plan-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
+  .plan-table td, .plan-table td:first-child { padding: 0; border: 0; text-align: left; max-width: none; min-width: 0; }
+  .plan-table td.desc, .plan-table td.plan-cell { grid-column: 1 / -1; }
+  .plan-table td.edit-cell { grid-column: 2; text-align: right; align-self: end; }
+  .plan-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+  .plan-table .plan-steps { min-width: 0; }
+}

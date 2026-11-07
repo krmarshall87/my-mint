@@ -132,6 +132,19 @@ const SCHEMA = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (account_id, security_id)
   )`,
+  // Credit card statements from Plaid Liabilities (JSON), replaced on every sync.
+  `CREATE TABLE IF NOT EXISTS card_statements (
+    account_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
+  // Your own card details (APR, promo, statement for manual cards); never touched by a sync.
+  `CREATE TABLE IF NOT EXISTS card_settings (
+    account_id TEXT PRIMARY KEY,
+    data TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
   `CREATE TABLE IF NOT EXISTS account_nicknames (
     account_id TEXT PRIMARY KEY,
     nickname TEXT NOT NULL
@@ -187,6 +200,8 @@ class PgStore {
     await this.pool.query('DELETE FROM account_nicknames WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM manual_accounts WHERE item_id = $1', [itemId]);
     await this.pool.query('DELETE FROM holdings WHERE item_id = $1', [itemId]);
+    await this.pool.query('DELETE FROM card_statements WHERE item_id = $1', [itemId]);
+    await this.pool.query('DELETE FROM card_settings WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM balance_snapshots WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM items WHERE item_id = $1', [itemId]);
   }
@@ -331,6 +346,49 @@ class PgStore {
       throw err;
     } finally {
       client.release();
+    }
+  }
+
+  async replaceCardStatements(itemId, rows) {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM card_statements WHERE item_id = $1', [itemId]);
+      for (const r of rows) {
+        await client.query(
+          `INSERT INTO card_statements (account_id, item_id, data) VALUES ($1, $2, $3)
+           ON CONFLICT (account_id) DO UPDATE SET item_id = EXCLUDED.item_id, data = EXCLUDED.data, updated_at = now()`,
+          [r.account_id, itemId, JSON.stringify(r)],
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listCardStatements() {
+    const { rows } = await this.pool.query('SELECT item_id, data, updated_at FROM card_statements');
+    return rows.map((r) => ({ ...JSON.parse(r.data), item_id: r.item_id, updated_at: new Date(r.updated_at).toISOString() }));
+  }
+
+  async listCardSettings() {
+    const { rows } = await this.pool.query('SELECT account_id, data FROM card_settings');
+    return rows.map((r) => ({ ...JSON.parse(r.data), account_id: r.account_id }));
+  }
+
+  async setCardSettings(accountId, data) {
+    if (data === null) {
+      await this.pool.query('DELETE FROM card_settings WHERE account_id = $1', [accountId]);
+    } else {
+      await this.pool.query(
+        `INSERT INTO card_settings (account_id, data) VALUES ($1, $2)
+         ON CONFLICT (account_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
+        [accountId, JSON.stringify(data)],
+      );
     }
   }
 
@@ -491,6 +549,7 @@ class FileStore {
       delete this.data.accounts[k]; delete this.data.nicknames?.[k]; delete this.data.manual?.[k];
       this.data.snapshots = (this.data.snapshots || []).filter((x) => x.account_id !== k);
       this.data.holdings = (this.data.holdings || []).filter((x) => x.account_id !== k);
+      delete this.data.cardStatements?.[k]; delete this.data.cardSettings?.[k];
     }
     for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) { delete this.data.transactions[k]; delete this.data.overrides?.[k]; }
     this.save();
@@ -551,6 +610,29 @@ class FileStore {
   async replaceHoldings(itemId, rows) {
     const now = new Date().toISOString();
     this.data.holdings = (this.data.holdings || []).filter((h) => h.item_id !== itemId).concat(rows.map((h) => ({ ...h, item_id: itemId, updated_at: now })));
+    this.save();
+  }
+
+  async replaceCardStatements(itemId, rows) {
+    const now = new Date().toISOString();
+    this.data.cardStatements ||= {};
+    for (const [k, v] of Object.entries(this.data.cardStatements)) if (v.item_id === itemId) delete this.data.cardStatements[k];
+    for (const r of rows) this.data.cardStatements[r.account_id] = { ...r, item_id: itemId, updated_at: now };
+    this.save();
+  }
+
+  async listCardStatements() {
+    return Object.values(this.data.cardStatements || {});
+  }
+
+  async listCardSettings() {
+    return Object.entries(this.data.cardSettings || {}).map(([account_id, d]) => ({ ...d, account_id }));
+  }
+
+  async setCardSettings(accountId, data) {
+    this.data.cardSettings ||= {};
+    if (data === null) delete this.data.cardSettings[accountId];
+    else this.data.cardSettings[accountId] = data;
     this.save();
   }
 

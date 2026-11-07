@@ -390,6 +390,60 @@
     container.appendChild(svg);
   }
 
+  // ------------------------------------------------------- balance outlook --
+  // Projected balance day by day (a step line), with a dashed buffer line.
+  // days: [{ date, label, balance, events: [{ name, amount }] }]
+  function outlook(container, { days, buffer, format, color, height = 220 }) {
+    const card = container.closest('.chart-card');
+    const tip = tooltip(card);
+    container.replaceChildren();
+    if (!days.length) return;
+    const width = Math.max(280, container.clientWidth);
+    const m = { top: 12, right: 12, bottom: 26, left: 58 };
+    const plotW = width - m.left - m.right, plotH = height - m.top - m.bottom;
+    const vals = days.map((d) => d.balance);
+    const { lo, hi, step } = niceRange(Math.min(0, buffer, ...vals), Math.max(buffer, ...vals));
+    const n = days.length;
+    const xOf = (i) => m.left + (i / Math.max(1, n - 1)) * plotW;
+    const yOf = (v) => m.top + plotH - ((v - lo) / (hi - lo || 1)) * plotH;
+    const svg = el('svg:svg', { width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': container.dataset.label || '' });
+    for (let v = lo; v <= hi + 1e-9; v += step) {
+      const y = Math.round(yOf(v)) + 0.5;
+      svg.appendChild(el('svg:line', { x1: m.left, x2: width - m.right, y1: y, y2: y, class: Math.abs(v) < 1e-9 ? 'axis-line' : 'grid-line' }));
+      svg.appendChild(el('svg:text', { x: m.left - 8, y: y + 4, 'text-anchor': 'end', class: 'tick' }, (v < 0 ? '−' : '') + compactMoney(Math.abs(v))));
+    }
+    const every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(plotW / 70))));
+    days.forEach((d, i) => { if (i % every === 0) svg.appendChild(el('svg:text', { x: xOf(i), y: height - 8, 'text-anchor': 'middle', class: 'tick' }, d.label)); });
+    const by = Math.round(yOf(buffer)) + 0.5;
+    svg.appendChild(el('svg:line', { x1: m.left, x2: width - m.right, y1: by, y2: by, class: 'buffer-line' }));
+    svg.appendChild(el('svg:text', { x: width - m.right, y: by - 5, 'text-anchor': 'end', class: 'tick' }, `Buffer ${format(buffer)}`));
+    let path = `M${xOf(0)},${yOf(vals[0])}`;
+    for (let i = 1; i < n; i++) path += `H${xOf(i)}V${yOf(vals[i])}`;
+    svg.appendChild(el('svg:path', { d: path, class: 'pace-line', style: `stroke:${color}` }));
+    days.forEach((d, i) => { if (d.events.some((e) => e.card)) svg.appendChild(el('svg:circle', { cx: xOf(i), cy: yOf(d.balance), r: 3.5, class: 'pace-dot', style: `stroke:${color}` })); });
+    const cross = el('svg:line', { y1: m.top, y2: m.top + plotH, class: 'crosshair', visibility: 'hidden' });
+    svg.appendChild(cross);
+    const hit = el('svg:rect', { x: m.left, y: m.top, width: plotW, height: plotH, class: 'hit', tabindex: 0, 'aria-label': container.dataset.label || '' });
+    const show = (i, px, py) => {
+      const d = days[i];
+      cross.setAttribute('x1', xOf(i)); cross.setAttribute('x2', xOf(i)); cross.setAttribute('visibility', 'visible');
+      tip.show([
+        { color, value: format(d.balance), label: 'checking, end of day' },
+        ...d.events.map((e) => ({ value: `${e.amount > 0 ? '+' : '−'}${format(Math.abs(e.amount))}`, label: e.name })),
+      ], d.date, px, py);
+    };
+    hit.addEventListener('pointermove', (e) => {
+      const box = svg.getBoundingClientRect();
+      show(Math.min(n - 1, Math.max(0, Math.round(((e.clientX - box.left - m.left) / plotW) * (n - 1)))), e.clientX, e.clientY);
+    });
+    hit.addEventListener('focus', () => show(0, ...anchorOf(hit)));
+    const hide = () => { cross.setAttribute('visibility', 'hidden'); tip.hide(); };
+    hit.addEventListener('pointerleave', hide);
+    hit.addEventListener('blur', hide);
+    svg.appendChild(hit);
+    container.appendChild(svg);
+  }
+
   // ------------------------------------------------------------ table view --
   // The accessible twin of every chart: same numbers, no hover needed.
   function table(container, { columns: cols, rows }) {
@@ -408,5 +462,5 @@
     container.appendChild(t);
   }
 
-  window.Charts = { columns, bars, donut, meter, table, el, diverging, pace };
+  window.Charts = { columns, bars, donut, meter, table, el, diverging, pace, outlook };
 })();

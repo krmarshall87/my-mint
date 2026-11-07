@@ -157,7 +157,7 @@ function manualLine(a) {
 }
 
 const ERROR_TEXT = {
-  ADDITIONAL_CONSENT_REQUIRED: 'Needs your OK to share investment details. Click reconnect.',
+  ADDITIONAL_CONSENT_REQUIRED: 'Needs your OK to share more details (investments or card statements). Click reconnect.',
   ITEM_LOGIN_REQUIRED: 'Your bank needs you to sign in again. Click reconnect.',
 };
 
@@ -1341,6 +1341,261 @@ $('#csv-form').addEventListener('submit', async (e) => {
 });
 
 
+
+// ----------------------------------------------------------- Credit cards --
+const CARD_STATUS = {
+  ADDITIONAL_CONSENT_REQUIRED: 'needs your OK to share card statements (balances, due dates and APRs). Click “reconnect” next to it in the accounts list.',
+  PRODUCTS_NOT_SUPPORTED: 'doesn’t share card statements through Plaid. Click Edit on its cards to add them yourself.',
+  INVALID_PRODUCT: 'can’t share card statements yet: turn on the Liabilities product in your Plaid dashboard, or click Edit to add them yourself.',
+  PRODUCT_NOT_READY: 'is still preparing card statements. They’ll appear after the next update.',
+  NO_LIABILITY_ACCOUNTS: 'didn’t report any card statements.',
+};
+let cardPlanData = null;
+const cardBuffer = () => {
+  const v = Number(prefs.get('cardBuffer', 500));
+  return Number.isFinite(v) && v >= 0 ? v : 500;
+};
+const noteBox = (level, ...parts) => {
+  const p = el('p', { class: `note-box ${level}` });
+  p.append(...parts.map((x) => (typeof x === 'string' ? x : x)));
+  return p;
+};
+const strong = (t) => el('strong', {}, t);
+const aprText = (c) => (c.promo ? `${c.promo.apr}% promo` : `${Number(c.apr).toFixed(2)}%`);
+
+async function loadCards() {
+  const input = $('#card-buffer');
+  if (document.activeElement !== input) input.value = String(cardBuffer());
+  await withLoading($('#view-cards'), async () => {
+    const d = await api(`/api/card-plan?buffer=${encodeURIComponent(cardBuffer())}`);
+    cardPlanData = d;
+    const t = d.totals;
+    $('#card-window').textContent = `Planning through ${shortDate(d.end)}; bills and paychecks are looked at through ${shortDate(d.through)} so next month’s bills stay covered.`;
+
+    const status = $('#card-status');
+    status.replaceChildren(...d.status.filter((x) => x.status).map((x) =>
+      noteBox('', strong(x.institution), ` ${CARD_STATUS[x.status] || `couldn’t share card statements (${x.status}).`}`)));
+
+    const warn = $('#card-warnings');
+    warn.replaceChildren();
+    if (t.below_buffer > 0) {
+      warn.appendChild(noteBox('critical', strong('Checking runs short. '),
+        `Bills alone take it to ${money(t.lowest_balance)} on ${shortDate(t.lowest_date)}, ${money(t.below_buffer)} under your ${money(d.buffer)} buffer, before any card payment.`));
+    }
+    if (t.missed_minimums) {
+      warn.appendChild(noteBox('critical', strong('A minimum payment can’t be made on time. '),
+        `${money(t.minimum_short)} of minimums doesn’t fit before the due date${t.missed_minimums > 1 ? 's' : ''}; it’s planned for right after the next paycheck, but a late fee is likely. Moving money from savings (or a smaller buffer) avoids it.`));
+    }
+    const missing = d.cards.filter((c) => c.needs_details && c.balance > 0);
+    if (missing.length) {
+      warn.appendChild(noteBox('', strong(`${missing.length} card${missing.length > 1 ? 's' : ''} without a statement. `),
+        'Without a statement balance and due date, the plan can’t include ', missing.map((c) => c.name).join(', '), '. Click Edit to add them.'));
+    }
+    if (!t.below_buffer && !t.missed_minimums && t.due > 0 && t.unpaid === 0) {
+      warn.appendChild(noteBox('good', strong('Every statement can be paid in full on time. '), `No interest this month, and ${money(t.left_over)} stays in checking above your buffer.`));
+    }
+
+    $('#cp-checking').textContent = money(d.checking.total);
+    $('#cp-income').textContent = money(t.income);
+    $('#cp-bills').textContent = money(t.bills);
+    $('#cp-due').textContent = money(t.due);
+    $('#cp-pay').textContent = money(t.pay);
+    $('#cp-interest').textContent = t.interest ? `~${money(t.interest)}` : money(0);
+    for (const id of ['cp-income', 'cp-bills']) $(`#${id}`).previousElementSibling.textContent = `${id === 'cp-income' ? 'Paychecks' : 'Bills'} to ${shortDate(d.through)}`;
+
+    renderPlanTable(d);
+    renderSuggestions(d);
+    renderOutlook(d);
+    renderIncome(d);
+  });
+}
+
+function renderPlanTable(d) {
+  const table = $('#card-plan-table');
+  table.replaceChildren();
+  const head = el('tr');
+  ['Card', 'Still owed', 'Minimum', 'APR', 'Due', 'Plan', 'Interest', ''].forEach((h, i) => head.appendChild(el('th', { class: [1, 2, 3, 6].includes(i) ? 'num' : '' }, h)));
+  table.appendChild(el('thead')).appendChild(head);
+  const body = el('tbody');
+  if (!d.cards.length) {
+    const tr = el('tr');
+    tr.appendChild(el('td', { colspan: 8, class: 'muted' }, 'No credit cards linked yet.'));
+    body.appendChild(tr);
+  }
+  const incomeOn = (date) => d.timeline.find((e) => e.type === 'income' && e.date === date);
+  for (const c of d.cards) {
+    const tr = el('tr');
+    const name = el('td', { class: 'desc' });
+    name.append(el('strong', {}, c.name));
+    const sub = c.statement_date
+      ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since` : ''}${c.source === 'you' ? ' (yours)' : ''}`
+      : `Balance ${money(c.balance || 0)} · no statement yet`;
+    name.append(el('div', { class: 'sub' }, sub));
+    const owed = el('td', { class: 'num' }, c.remaining == null ? '—' : money(c.remaining));
+    const minMet = c.minimum === 0 && c.minimum_payment > 0 && c.remaining > 0;
+    const min = el('td', { class: 'num' }, c.minimum == null ? '—' : minMet ? '✓ met' : `${money(c.minimum)}${c.minimum_estimated ? '*' : ''}`);
+    if (minMet) min.title = `The ${money(c.minimum_payment)} minimum is covered by payments since the statement`;
+    if (c.minimum_estimated) min.title = 'Estimated: your bank didn’t report the minimum';
+    const apr = el('td', { class: 'num' });
+    apr.append(aprText(c));
+    if (c.apr_assumed) apr.append(el('span', { class: 'badge', title: 'Your bank didn’t report the APR. Click Edit to add it.' }, 'assumed'));
+    if (c.promo_ending) apr.append(el('div', { class: 'sub muted' }, `promo ends ${shortDate(c.promo_ending)}`));
+    else if (c.promo?.end) apr.append(el('div', { class: 'sub muted' }, `until ${shortDate(c.promo.end)}`));
+    const due = el('td', {}, c.due_date ? shortDate(c.due_date) : '—');
+    if (c.overdue) due.append(el('span', { class: 'badge' }, 'past due'));
+
+    const plan = el('td');
+    const steps = el('ul', { class: 'plan-steps' });
+    if (c.needs_details) steps.appendChild(el('li', { class: 'muted' }, 'Add the statement to plan this card'));
+    else if (!c.remaining) steps.appendChild(el('li', {}, c.statement_balance ? '✓ Statement paid' : 'Nothing due'));
+    for (const p of c.payments || []) {
+      const li = el('li');
+      if (!p.late) {
+        li.append(strong(`Pay ${money(p.amount)}`), ` by ${shortDate(c.due_date)}`);
+        const fb = c.funded_by;
+        li.append(el('span', { class: 'sub muted' }, fb === 'checking' ? 'money’s there now' : fb ? `after ${fb.name} on ${shortDate(fb.date)}` : ''));
+      } else {
+        const pay = incomeOn(p.date);
+        li.append(strong(`Then ${money(p.amount)}`), ` on ${shortDate(p.date)}`);
+        li.append(el('span', { class: 'sub muted' }, pay ? `after ${pay.name}, to cut interest` : 'as soon as there’s room, to cut interest'));
+      }
+      steps.appendChild(li);
+    }
+    if (c.remaining > 0 && !c.payments?.length) steps.appendChild(el('li', {}, strong('No money for this card'), el('span', { class: 'sub muted' }, 'see the suggestions below')));
+    if (c.promo && !c.promo_ending && c.unpaid > 0 && c.payments?.length) steps.appendChild(el('li', { class: 'muted' }, `${money(c.unpaid)} left on the 0% promo`));
+    if (c.promo_ending && c.balance > 0) steps.appendChild(el('li', {}, strong(`Pay off all ${money(c.balance)} by ${shortDate(c.promo_ending)}`), el('span', { class: 'sub muted' }, 'when the promo ends, interest may be charged back to the purchase date')));
+    plan.appendChild(steps);
+
+    const interest = el('td', { class: 'num' });
+    if (c.interest_cost) interest.append(`~${money(c.interest_cost)}`);
+    else interest.append(c.remaining > 0 ? '$0' : '—');
+    if (c.interest_if_unpaid > c.interest_cost) interest.append(el('div', { class: 'sub muted' }, `saves ~${money(c.interest_if_unpaid - c.interest_cost)}`));
+
+    const edit = el('td');
+    const btn = el('button', { type: 'button', class: 'link-btn' }, 'Edit');
+    btn.addEventListener('click', () => openCardDialog(c));
+    edit.appendChild(btn);
+    plan.className = 'plan-cell';
+    edit.className = 'edit-cell';
+    [[owed, 'Still owed'], [min, 'Minimum'], [apr, 'APR'], [due, 'Due'], [plan, 'Plan'], [interest, 'Interest']].forEach(([td, label]) => td.setAttribute('data-label', label));
+    tr.append(name, owed, min, apr, due, plan, interest, edit);
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+}
+
+function renderSuggestions(d) {
+  const box = $('#card-suggestions');
+  box.replaceChildren();
+  for (const s of d.suggestions) {
+    const from = s.accounts.join(', ');
+    if (s.type === 'savings') {
+      box.appendChild(noteBox('info', strong(`Consider moving ${money(s.amount)} from savings`), ` (${from}) to checking. `,
+        s.interest_saved > 0 ? `It would pay the cards on time and save about ${money(s.interest_saved)} in interest this month.` : 'It would keep checking above your buffer and every payment on time.'));
+    } else {
+      box.appendChild(noteBox('info', strong(`Your card debt is over ${money(d.invest_threshold)}. `),
+        `Selling ${money(s.amount)} from ${from} would cover the rest${s.interest_saved > 0 ? ` and save about ${money(s.interest_saved)} a month in interest` : ''}. Card interest usually costs more than investments earn, but selling can mean capital-gains tax. Retirement accounts are never suggested.`));
+    }
+  }
+}
+
+function renderOutlook(d) {
+  // One point per day from today, with that day's events.
+  const days = [];
+  const start = new Date(`${d.today}T00:00:00Z`), end = new Date(`${d.through}T00:00:00Z`);
+  let bal = d.checking.total;
+  for (let t = start; t <= end; t = new Date(t.getTime() + 86400000)) {
+    const date = t.toISOString().slice(0, 10);
+    const events = d.timeline.filter((e) => e.date === date).map((e) => ({ name: e.type === 'card' ? `${e.name}${e.late ? ' (extra)' : ''}` : e.name, amount: e.amount, card: e.type === 'card' }));
+    bal = events.reduce((s, e) => s + e.amount, bal);
+    days.push({ date: shortDate(date), label: shortDate(date), balance: Math.round(bal * 100) / 100, events });
+  }
+  Charts.outlook($('#card-outlook'), { days, buffer: d.buffer, format: wholeMoney, color: 'var(--series-1)' });
+  Charts.table($('#card-outlook-table'), {
+    rows: d.timeline,
+    columns: [
+      { label: 'Date', get: (e) => shortDate(e.date) },
+      { label: 'What', get: (e) => `${e.type === 'card' ? `Pay ${e.name}${e.late ? ' (extra)' : ''}` : e.name}${e.variable ? ' (about)' : ''}` },
+      { label: 'Amount', num: true, get: (e) => signedMoney(e.amount) },
+      { label: 'Checking after', num: true, get: (e) => money(e.balance) },
+    ],
+  });
+}
+
+function renderIncome(d) {
+  const table = $('#card-income-table');
+  table.replaceChildren();
+  const head = el('tr');
+  ['Paid by', 'How often', 'Typical', 'Last', 'Next'].forEach((h, i) => head.appendChild(el('th', { class: i === 2 ? 'num' : '' }, h)));
+  table.appendChild(el('thead')).appendChild(head);
+  const body = el('tbody');
+  if (!d.income.length) {
+    const tr = el('tr');
+    tr.appendChild(el('td', { colspan: 5, class: 'muted' }, 'No regular paychecks found in checking yet. Make sure paychecks are in an Income category (Paycheck), for example with a rule.'));
+    body.appendChild(tr);
+  }
+  for (const p of d.income) {
+    const tr = el('tr');
+    tr.append(el('td', { class: 'desc' }, p.name), el('td', {}, p.frequency_label), el('td', { class: 'num' }, money(p.amount)),
+      el('td', {}, shortDate(p.last_date)), el('td', {}, p.next_date ? shortDate(p.next_date) : '—'));
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+}
+
+let bufferTimer = null;
+$('#card-buffer').addEventListener('input', (e) => {
+  const v = Number(e.target.value);
+  if (!Number.isFinite(v) || v < 0) return;
+  prefs.set('cardBuffer', v);
+  clearTimeout(bufferTimer);
+  bufferTimer = setTimeout(loadCards, 400);
+});
+
+let editingCard = null;
+const cardForm = $('#card-form');
+function openCardDialog(c) {
+  editingCard = c;
+  cardForm.reset();
+  $('#card-error').hidden = true;
+  $('#card-title').textContent = c.name;
+  const fromBank = c.source === 'plaid';
+  $('#card-dialog-note').textContent = fromBank
+    ? 'Your bank shares this card’s statement. Add what it leaves out, like a promo rate. Anything left blank uses your bank’s value.'
+    : 'Your bank doesn’t share this card’s statement, so add it from the card’s website or paper statement.';
+  const mine = c.mine || {};
+  const set = (k, v, ph) => { cardForm[k].value = v ?? ''; cardForm[k].placeholder = ph ?? ''; };
+  set('apr', mine.apr, c.apr_assumed ? 'not reported' : String(c.regular_apr ?? c.apr));
+  set('promo_apr', mine.promo_apr, '');
+  set('promo_end', mine.promo_end);
+  set('statement_balance', c.source === 'you' ? c.statement_balance : mine.statement_balance, fromBank ? String(c.statement_balance) : '');
+  set('statement_date', c.source === 'you' ? c.statement_date : mine.statement_date);
+  set('due_date', c.source === 'you' ? c.due_date : mine.due_date);
+  set('minimum_payment', c.source === 'you' ? c.minimum_payment : mine.minimum_payment, fromBank && c.minimum_payment != null ? String(c.minimum_payment) : '');
+  $('#card-dialog').showModal();
+  cardForm.apr.focus();
+}
+cardForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = {};
+  for (const k of ['apr', 'promo_apr', 'promo_end', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
+  try {
+    await api(`/api/cards/${encodeURIComponent(editingCard.account_id)}`, { method: 'PUT', body });
+    $('#card-dialog').close();
+    await loadCards();
+  } catch (err) {
+    const box = $('#card-error');
+    box.textContent = err.message;
+    box.hidden = false;
+  }
+});
+$('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
+$('#card-clear').addEventListener('click', async () => {
+  await api(`/api/cards/${encodeURIComponent(editingCard.account_id)}`, { method: 'PUT', body: {} });
+  $('#card-dialog').close();
+  await loadCards();
+});
+
 // ------------------------------------------------------------ Investments --
 // Fixed order, so each type always gets the same color.
 const INV_TYPES = [
@@ -1426,7 +1681,7 @@ async function loadInvestments() {
 }
 
 // ----------------------------------------------------------------- Router --
-const VIEWS = { overview: loadOverview, transactions: loadTransactions, bills: loadBills, budgets: loadBudgets, trends: loadTrends, investments: loadInvestments, rules: loadRulesView };
+const VIEWS = { overview: loadOverview, transactions: loadTransactions, bills: loadBills, cards: loadCards, budgets: loadBudgets, trends: loadTrends, investments: loadInvestments, rules: loadRulesView };
 
 function route() {
   const view = VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : 'overview';
