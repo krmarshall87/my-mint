@@ -156,6 +156,29 @@ function manualLine(a) {
   </span>`;
 }
 
+// Open a card's or loan's Edit dialog from anywhere (alerts): go to its tab,
+// and once that tab has loaded, open the dialog with the missing fields marked.
+let pendingEdit = null;
+function askFor(view, accountId) {
+  pendingEdit = { view, accountId };
+  if (location.hash === `#${view}`) VIEWS[view](); else location.hash = view;
+}
+function takePendingEdit(view, list, open) {
+  if (pendingEdit?.view !== view) return;
+  const item = list.find((x) => x.account_id === pendingEdit.accountId);
+  pendingEdit = null;
+  if (item) open(item, { highlight: true });
+}
+// Mark the inputs a dialog still needs, and focus the first.
+function markNeeded(form, names) {
+  for (const f of form.querySelectorAll('.field.needed')) f.classList.remove('needed');
+  const inputs = names.map((n) => form[n]).filter(Boolean);
+  for (const i of inputs) i.closest('.field')?.classList.add('needed');
+  (inputs[0] || form.querySelector('input'))?.focus();
+}
+const LOAN_FIELDS_FOR = { 'interest rate': ['rate'], 'monthly payment': ['payment'] };
+const CARD_FIELDS_FOR = { statement: ['statement_balance', 'statement_date', 'due_date', 'minimum_payment'], APR: ['apr'], 'credit limit': ['credit_limit'] };
+
 const expiringSoon = (i) => i.expires_in_days != null && i.expires_in_days <= 30;
 const ERROR_TEXT = {
   ITEM_LOGIN_REQUIRED: 'Sign-in expired. Click reconnect.',
@@ -260,9 +283,9 @@ function renderAlerts(alerts) {
     const text = el('div');
     for (const p of a.parts) {
       if (p.href && safeUrl(p.href)) text.appendChild(el('a', { href: p.href, target: '_blank', rel: 'noopener noreferrer' }, `${p.t} ↗`));
-      else if (p.action === 'import') {
+      else if (p.action === 'import' || p.action === 'edit-card' || p.action === 'edit-loan') {
         const btn = el('button', { type: 'button', class: 'link-btn inline' }, p.t);
-        btn.addEventListener('click', () => openCsvDialog(p.account_id));
+        btn.addEventListener('click', () => (p.action === 'import' ? openCsvDialog(p.account_id) : askFor(p.action === 'edit-card' ? 'cards' : 'loans', p.account_id)));
         text.appendChild(btn);
       } else text.appendChild(p.strong ? el('strong', {}, p.t) : document.createTextNode(p.t));
     }
@@ -1428,6 +1451,7 @@ async function loadCards() {
     for (const id of ['cp-income', 'cp-bills']) $(`#${id}`).previousElementSibling.textContent = `${id === 'cp-income' ? 'Paychecks' : 'Bills'} to ${shortDate(d.through)}`;
 
     renderPlanTable(d);
+    takePendingEdit('cards', d.cards, openCardDialog);
     renderSuggestions(d);
     renderOutlook(d);
     renderIncome(d);
@@ -1504,8 +1528,9 @@ function renderPlanTable(d) {
     if (c.interest_ytd) interest.append(el('div', { class: 'sub muted' }, `${money(c.interest_ytd)} this year`));
 
     const edit = el('td');
-    const btn = el('button', { type: 'button', class: 'link-btn' }, 'Edit');
-    btn.addEventListener('click', () => openCardDialog(c));
+    const needs = c.missing?.length;
+    const btn = el('button', { type: 'button', class: needs ? 'link-btn attention' : 'link-btn', title: needs ? `Missing: ${c.missing.join(', ')}` : '' }, needs ? 'Add details' : 'Edit');
+    btn.addEventListener('click', () => openCardDialog(c, { highlight: !!needs }));
     edit.appendChild(btn);
     plan.className = 'plan-cell';
     edit.className = 'edit-cell';
@@ -1586,7 +1611,7 @@ $('#card-buffer').addEventListener('input', (e) => {
 
 let editingCard = null;
 const cardForm = $('#card-form');
-function openCardDialog(c) {
+function openCardDialog(c, { highlight = false } = {}) {
   editingCard = c;
   cardForm.reset();
   $('#card-error').hidden = true;
@@ -1606,7 +1631,7 @@ function openCardDialog(c) {
   set('due_date', c.source === 'you' ? c.due_date : mine.due_date);
   set('minimum_payment', c.source === 'you' ? c.minimum_payment : mine.minimum_payment, fromBank && c.minimum_payment != null ? String(c.minimum_payment) : '');
   $('#card-dialog').showModal();
-  cardForm.apr.focus();
+  markNeeded(cardForm, highlight ? (c.missing || []).flatMap((m) => CARD_FIELDS_FOR[m] || []) : []);
 }
 cardForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1652,6 +1677,7 @@ async function loadLoans() {
     if (!d.loans.length) list.appendChild(el('p', { class: 'panel muted empty-note' }, 'No loans linked yet. Mortgages and loans appear here once a bank shares them, or add one with + Add manual account (type Loan).'));
     const order = (l) => (l.kind === 'mortgage' ? 0 : 1);
     for (const loan of [...d.loans].sort((x, y) => order(x) - order(y) || y.balance - x.balance)) list.appendChild(loanPanel(loan, d.today));
+    takePendingEdit('loans', d.loans, openLoanDialog);
   });
 }
 
@@ -1696,9 +1722,17 @@ function loanPanel(loan, today) {
   if (loan.has_prepayment_penalty) body.appendChild(el('p', { class: 'note-box' }, el('strong', {}, 'This loan has a prepayment penalty. '), 'Check its terms before paying extra.'));
   if (loan.past_due) body.appendChild(el('p', { class: 'note-box critical' }, el('strong', {}, 'Past due: '), `${money(loan.past_due)}.`));
 
-  if (loan.missing.length || !(loan.balance > 0)) {
-    body.appendChild(el('p', { class: 'note-box' }, el('strong', {}, loan.balance > 0 ? `Add the ${loan.missing.join(' and ')}` : 'Paid off'),
-      loan.balance > 0 ? ' to see the payoff schedule and what-ifs. Click Edit; it’s on your loan statement.' : ': nothing left to schedule.'));
+  if (!(loan.balance > 0)) {
+    body.appendChild(el('p', { class: 'note-box good' }, el('strong', {}, 'Paid off: '), 'nothing left to schedule.'));
+    return panel;
+  }
+  if (loan.missing.length) {
+    const ask = el('div', { class: 'note-box ask' });
+    const btn = el('button', { type: 'button', class: 'btn-primary' }, `Add the ${loan.missing.join(' and ')}`);
+    btn.addEventListener('click', () => openLoanDialog(loan, { highlight: true }));
+    ask.append(el('p', {}, el('strong', {}, `Add the ${loan.missing.join(' and ')} to see the payoff schedule and what-ifs. `),
+      `Your bank doesn’t share it for this loan; it’s on your loan statement or the lender’s website.`), btn);
+    body.appendChild(ask);
     return panel;
   }
 
@@ -1886,7 +1920,7 @@ function renderSchedule(container, sched, monthly, withExtra) {
 
 let editingLoan = null;
 const loanForm = $('#loan-form');
-function openLoanDialog(loan) {
+function openLoanDialog(loan, { highlight = false } = {}) {
   editingLoan = loan;
   loanForm.reset();
   $('#loan-error').hidden = true;
@@ -1899,7 +1933,7 @@ function openLoanDialog(loan) {
   set('original_principal', mine.original_principal, loan.original_principal.source === 'bank' ? String(loan.original_principal.value) : '');
   for (const k of ['maturity_date', 'next_due_date', 'origination_date']) set(k, mine[k]);
   $('#loan-dialog').showModal();
-  loanForm.rate.focus();
+  markNeeded(loanForm, highlight ? loan.missing.flatMap((m) => LOAN_FIELDS_FOR[m] || []) : []);
 }
 loanForm.addEventListener('submit', async (e) => {
   e.preventDefault();

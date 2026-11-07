@@ -1512,6 +1512,12 @@ async function cardPlan({ buffer }) {
       apr: aprAssumed ? DEFAULT_APR() : d.apr, apr_assumed: aprAssumed,
       overdue: remaining > 0 && d.due_date != null && d.due_date < today,
       needs_details: d.statement_balance == null || d.due_date == null,
+      // What you could add (Edit) to make the plan exact.
+      missing: (a.current_balance || 0) > 0 ? [
+        ...(d.statement_balance == null || d.due_date == null ? ['statement'] : []),
+        ...(aprAssumed ? ['APR'] : []),
+        ...(limit == null ? ['credit limit'] : []),
+      ] : [],
       promo_ending: d.promo?.end && d.promo.end <= fromDayNum(dayNum(today) + MAX_HORIZON) ? d.promo.end : null,
     };
   });
@@ -1753,7 +1759,7 @@ const pmt = (balance, ratePct, months) => {
 
 const kindOf = (a, p) => p.kind || (/mortgage|home/i.test(`${a.subtype} ${a.name}`) ? 'mortgage' : a.subtype || 'loan');
 
-app.get('/api/loans', async (_req, res) => {
+async function loanList() {
   const today = isoDate(new Date());
   const [accounts, statements, settings, txns, itemList] = await Promise.all([
     listAccounts(), store.listCardStatements(), store.listCardSettings(), categorizedTransactions(), store.listItems(),
@@ -1804,7 +1810,11 @@ app.get('/api/loans', async (_req, res) => {
   const status = itemList
     .filter((i) => accounts.some((a) => a.item_id === i.item_id && a.type === 'loan' && !a.manual))
     .map((i) => ({ institution: i.institution_name, status: statusOf(i, 'liabilities') }));
-  res.json({ today, loans, status });
+  return { today, loans, status };
+}
+
+app.get('/api/loans', async (_req, res) => {
+  res.json(await loanList());
 });
 
 const LOAN_FIELDS = { rate: 'pct', payment: 'money', escrow: 'money', maturity_date: 'date', next_due_date: 'date', original_principal: 'money', origination_date: 'date' };
@@ -1895,6 +1905,18 @@ app.get('/api/alerts', async (_req, res) => {
   // Bills due in the next 3 days.
   for (const bill of (await detectRecurring()).filter((x) => !x.overdue && x.next_date <= daysAgo(-3))) {
     add(`bill:${bill.id}:${bill.next_date}`, 'info', today, b(bill.name), ` (${bill.variable ? 'about ' : ''}${usd(bill.amount)}) is due around ${new Date(`${bill.next_date}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}.`);
+  }
+
+  // Details only you can add: a loan's rate, a card's statement, APR or limit.
+  const list = (xs) => (xs.length > 1 ? `${xs.slice(0, -1).join(', ')} and ${xs.at(-1)}` : xs[0]);
+  const plan = await cardPlan({ buffer: PLAN_BUFFER() });
+  for (const c of plan.cards.filter((x) => x.missing.length)) {
+    add(`missing:${c.account_id}:${c.missing.join(',')}`, 'info', today, b(c.name), ` is missing its ${list(c.missing)}, so the card plan ${c.missing.includes('statement') ? 'can’t include it' : 'has to guess'}. `,
+      { t: `Add ${c.missing.length > 1 ? 'them' : 'it'}`, action: 'edit-card', account_id: c.account_id });
+  }
+  for (const l of (await loanList()).loans.filter((x) => x.missing.length && x.balance > 0)) {
+    add(`missing:${l.account_id}:${l.missing.join(',')}`, 'info', today, b(l.name), ` is missing its ${list(l.missing)}, so there’s no payoff schedule yet. `,
+      { t: `Add ${l.missing.length > 1 ? 'them' : 'it'}`, action: 'edit-loan', account_id: l.account_id });
   }
 
   // Manual accounts that haven't had a CSV import in a while.
