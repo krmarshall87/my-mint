@@ -709,7 +709,7 @@ class FileStore {
 function createStore() {
   return process.env.DATABASE_URL
     ? new PgStore(process.env.DATABASE_URL)
-    : new FileStore(path.join(__dirname, 'data', 'store.json'));
+    : new FileStore(process.env.DATA_FILE || path.join(__dirname, 'data', 'store.json'));
 }
 
 module.exports = { createStore };

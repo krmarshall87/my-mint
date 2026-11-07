@@ -5,10 +5,14 @@
   "description": "Personal transaction viewer powered by Plaid",
   "main": "server.js",
   "type": "commonjs",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch --env-file-if-exists=.env server.js"
+    "dev": "node --watch --env-file-if-exists=.env server.js",
+    "check": "node --check server.js && node --check db.js && node --check categories.js && node --check public/app.js && node --check public/charts.js && node --check public/loan-math.js",
+    "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
     "express": "^5.1.0",
