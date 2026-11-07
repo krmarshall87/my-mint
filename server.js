@@ -226,7 +226,11 @@ app.post('/api/link-token', async (req, res) => {
       const item = await items.get(itemId);
       if (!item) return res.status(404).json({ error_message: 'Unknown item' });
       request.access_token = item.access_token;
-      if (item.error === CONSENT_NEEDED) request.additional_consented_products = consentNeeded(item.item_id);
+      // Every reconnect asks for both optional products (consent is free; Plaid
+      // bills only when we fetch), so a bank never needs a second OK later,
+      // and lets you pick accounts opened since you linked it.
+      request.additional_consented_products = [Products.Investments, Products.Liabilities];
+      request.update = { account_selection_enabled: true };
     } else {
       request.products = [Products.Transactions];
       request.transactions = { days_requested: 730 };
@@ -970,13 +974,6 @@ async function productError(item, statusMap, label, err) {
   return { error: code };
 }
 
-// Which products "reconnect" should ask consent for (both if we don't know, e.g. after a restart).
-function consentNeeded(itemId) {
-  const out = [];
-  if (investmentStatus.get(itemId) === CONSENT_NEEDED) out.push(Products.Investments);
-  if (liabilityStatus.get(itemId) === CONSENT_NEEDED) out.push(Products.Liabilities);
-  return out.length ? out : [Products.Investments, Products.Liabilities];
-}
 function consentLabel(itemId) {
   const inv = investmentStatus.get(itemId) === CONSENT_NEEDED, card = liabilityStatus.get(itemId) === CONSENT_NEEDED;
   if (inv && !card) return 'investment details (holdings and activity)';
