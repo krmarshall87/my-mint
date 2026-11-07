@@ -538,6 +538,48 @@ app.post('/api/rules/order', async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- export / import ----
+// A rules file is portable JSON: { version: 1, rules: [...] } in priority order.
+const RULE_FIELDS = ['match_type', 'pattern', 'account_id', 'amount_min', 'amount_max', 'rename_to', 'category', 'start_date'];
+const ruleKey = (r) => [r.match_type, r.pattern, r.account_id || '', r.amount_min ?? '', r.amount_max ?? ''].join('|');
+const MAX_IMPORT = 500;
+
+app.get('/api/rules/export', async (_req, res) => {
+  const rules = (await store.listTxRules()).map((r) => Object.fromEntries(RULE_FIELDS.map((f) => [f, r[f] ?? null])));
+  res.set('Content-Disposition', `attachment; filename="my-mint-rules-${isoDate(new Date())}.json"`);
+  res.json({ version: 1, exported_at: new Date().toISOString(), rules });
+});
+
+// Import rules below your existing ones, so rules you wrote yourself still win.
+// With `dry_run`, nothing is saved: each rule comes back validated, flagged if
+// you already have it, and with how many transactions it would actually change
+// (ones no earlier rule already claims).
+app.post('/api/rules/import', async (req, res) => {
+  const incoming = Array.isArray(req.body?.rules) ? req.body.rules : null;
+  if (!incoming) return res.status(400).json({ error_message: 'Expected a rules file: { "rules": [ ... ] }' });
+  if (incoming.length > MAX_IMPORT) return res.status(400).json({ error_message: `At most ${MAX_IMPORT} rules per import` });
+  const [existing, rows] = await Promise.all([store.listTxRules(), categorizedTransactions()]);
+  const have = new Set(existing.map(ruleKey));
+  const claimed = new Set(rows.filter((t) => t.rule_id).map((t) => t.transaction_id));
+  const results = [];
+  for (const [index, raw] of incoming.entries()) {
+    const [rule, error] = await parseRule({ ...raw, apply_past: raw?.start_date ? false : true });
+    if (!rule) { results.push({ index, ok: false, error, pattern: raw?.pattern ?? null }); continue; }
+    const key = ruleKey(rule);
+    if (have.has(key)) { results.push({ index, ok: false, duplicate: true, error: 'You already have this rule', rule }); continue; }
+    have.add(key);
+    const hits = rows.filter((t) => !claimed.has(t.transaction_id) && ruleMatches(rule, t));
+    for (const t of hits) claimed.add(t.transaction_id);
+    results.push({ index, ok: true, rule, matches: hits.length, sample: hits.slice(0, 3).map(ruleSample) });
+  }
+  const valid = results.filter((r) => r.ok);
+  if (req.body.dry_run) return res.json({ dry_run: true, results, will_add: valid.length });
+  let position = existing.length ? Math.max(...existing.map((r) => r.position)) + 1 : 0;
+  for (const r of valid) await store.saveTxRule({ id: crypto.randomUUID(), position: position++, ...r.rule });
+  bumpData();
+  res.json({ added: valid.length, skipped: results.filter((r) => !r.ok) });
+});
+
 // ------------------------------------------------------------- insights --
 const round2 = (n) => Math.round(n * 100) / 100;
 const merchantOf = (t) => t.display_name || t.merchant_name || t.name || 'Unknown';

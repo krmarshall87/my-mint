@@ -863,6 +863,70 @@ $('#rule-delete').addEventListener('click', async () => {
 });
 $('#new-rule').addEventListener('click', () => openRuleDialog(null));
 
+// --------------------------------------------------------- Import rules --
+let importRules = [];
+
+async function previewImport(file) {
+  let parsed;
+  try { parsed = JSON.parse(await file.text()); } catch { alert('That file isn’t valid JSON.'); return; }
+  importRules = Array.isArray(parsed) ? parsed : parsed?.rules;
+  if (!Array.isArray(importRules)) { alert('That file has no rules in it.'); return; }
+  let res;
+  try { res = await api('/api/rules/import', { method: 'POST', body: { rules: importRules, dry_run: true } }); } catch (e) { alert(e.message); return; }
+  const list = $('#import-list');
+  list.replaceChildren();
+  const skipped = res.results.filter((r) => !r.ok).length;
+  $('#import-summary').textContent = `${res.will_add} new rule${res.will_add === 1 ? '' : 's'}${skipped ? `, ${skipped} skipped` : ''}.`;
+  for (const r of res.results) {
+    const li = el('li', { class: `import-row ${r.ok ? '' : 'skipped'}` });
+    const box = el('input', { type: 'checkbox', 'data-index': String(r.index), 'aria-label': 'Include this rule' });
+    box.checked = r.ok;
+    box.disabled = !r.ok;
+    li.appendChild(box);
+    const body = el('div', { class: 'rule-body' });
+    if (r.rule) body.appendChild(ruleSentence(r.rule));
+    else body.appendChild(el('span', {}, `“${r.pattern ?? '?'}”`));
+    body.appendChild(el('small', { class: r.ok ? 'muted' : 'form-error' }, r.ok
+      ? (r.matches ? `Would change ${r.matches} transaction${r.matches === 1 ? '' : 's'}${r.sample.length ? `, e.g. ${r.sample.map((t) => t.original).join(' · ')}` : ''}` : 'Matches nothing yet (applies to future transactions)')
+      : r.error));
+    li.appendChild(body);
+    list.appendChild(li);
+  }
+  $('#import-all').checked = true;
+  updateImportButton();
+  $('#import-dialog').showModal();
+}
+
+function updateImportButton() {
+  const n = $('#import-list').querySelectorAll('input[type=checkbox]:checked').length;
+  const btn = $('#import-confirm');
+  btn.textContent = `Add ${n} rule${n === 1 ? '' : 's'}`;
+  btn.disabled = n === 0;
+}
+
+$('#import-rules').addEventListener('click', () => $('#rules-file').click());
+$('#rules-file').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (file) previewImport(file);
+});
+$('#import-list').addEventListener('change', updateImportButton);
+$('#import-all').addEventListener('change', (e) => {
+  $('#import-list').querySelectorAll('input[type=checkbox]:not(:disabled)').forEach((b) => { b.checked = e.target.checked; });
+  updateImportButton();
+});
+$('#import-cancel').addEventListener('click', () => $('#import-dialog').close());
+$('#import-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const chosen = [...$('#import-list').querySelectorAll('input[type=checkbox]:checked')].map((b) => importRules[Number(b.dataset.index)]);
+  try {
+    const res = await api('/api/rules/import', { method: 'POST', body: { rules: chosen } });
+    $('#import-dialog').close();
+    setStatus(`Imported ${res.added} rule${res.added === 1 ? '' : 's'}`);
+    await afterCategoryChange();
+  } catch (err) { alert(err.message); }
+});
+
 // ----------------------------------------------------------------- Router --
 const VIEWS = { overview: loadOverview, transactions: loadTransactions, budgets: loadBudgets, trends: loadTrends, rules: loadRulesView };
 
