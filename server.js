@@ -228,9 +228,9 @@ function syncAll() {
     for (const item of await items.list()) {
       if (isManualItem(item)) continue; // filled from CSV files, not Plaid
       try {
-        results.push({ item_id: item.item_id, ...(await syncItem(item)) });
+        results.push({ item_id: item.item_id, institution: item.institution_name, ...(await syncItem(item)) });
       } catch (err) {
-        results.push({ item_id: item.item_id, error: plaidError(err) });
+        results.push({ item_id: item.item_id, institution: item.institution_name, error: plaidError(err) });
       }
     }
     await recordSnapshots().catch((err) => console.error('snapshot failed', err.message));

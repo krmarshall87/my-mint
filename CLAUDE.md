@@ -60,6 +60,7 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 
 ## Architecture rules
 
+- **Scheduled sync:** `.github/workflows/sync.yml` POSTs `/api/sync` every 6 hours with the `APP_URL` / `APP_PASSWORD` repository secrets (it skips without them), waiting for Render to wake and retrying 503s. Curl sends no `Origin`, so the same-origin write check lets it through. Keep `/api/sync` safe to call at any time.
 - **Run one instance only.** The password-lockout map, the `syncInFlight` lock and the background `setInterval` sync all live in process memory. Running more than one Render instance would split the lockout and run overlapping syncs. To scale out, first move these into the database (for example, a lease row for the sync lock and a table for login failures; CockroachDB has no advisory locks).
 - **Start up fast.** Render fails a deploy if the port isn't bound in time. `server.js` calls `app.listen` first, then sets up the schema in the background with retries; `/api` returns 503 until it's ready. Keep it that way.
 - **Configuration comes from environment variables, read at use time.** `.env` and Render env vars hold only bootstrap settings and secrets. Don't freeze values that change at runtime into module-level constants. Add a config table only if settings need to change without a redeploy.

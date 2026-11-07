@@ -1,0 +1,56 @@
+# Keeps data fresh while the Render free plan is asleep: wakes the app and
+# runs a sync every 6 hours, which also saves the day's balances (net worth
+# history) and keeps alerts current.
+#
+# Needs two repository secrets (Settings → Secrets and variables → Actions):
+#   APP_URL       https://<your-service>.onrender.com   (no trailing slash)
+#   APP_PASSWORD  the app's APP_PASSWORD
+# Without them the job skips with a note. Run it by hand from the Actions tab.
+name: scheduled sync
+on:
+  schedule:
+    - cron: '17 */6 * * *' # every 6 hours, off the top of the hour
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: scheduled-sync
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Wake the app and sync
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$APP_PASSWORD" ]; then
+            echo "::notice::Set the APP_URL and APP_PASSWORD repository secrets to turn on scheduled syncs."
+            exit 0
+          fi
+          APP_URL="${APP_URL%/}"
+          echo "::add-mask::$APP_URL"
+
+          # Render can take a minute or two to wake a sleeping free service.
+          for i in $(seq 1 24); do
+            if curl -fsS --max-time 20 "$APP_URL/healthz" >/dev/null 2>&1; then echo "Awake."; break; fi
+            [ "$i" = 24 ] && { echo "::error::The app didn't wake up."; exit 1; }
+            sleep 10
+          done
+
+          # The API answers 503 until the database is ready, so retry that.
+          for i in $(seq 1 12); do
+            code=$(curl -sS --max-time 300 -o body.json -w '%{http_code}' -u "sync:$APP_PASSWORD" -X POST "$APP_URL/api/sync" || echo 000)
+            if [ "$code" = 200 ]; then
+              jq -r '.results[] | "\(.institution // .item_id): " + (if .error then "error \(.error.error_code // .error)" else "+\(.added // 0) new, \(.modified // 0) changed, \(.removed // 0) removed" end)' body.json || true
+              rm -f body.json
+              exit 0
+            fi
+            rm -f body.json
+            if [ "$code" = 401 ] || [ "$code" = 429 ]; then echo "::error::Sign-in failed ($code). Check the APP_PASSWORD secret."; exit 1; fi
+            echo "Got $code, retrying…"
+            sleep 15
+          done
+          echo "::error::Sync didn't succeed after several tries."
+          exit 1
