@@ -326,26 +326,6 @@ function monthRows(months) {
   });
 }
 
-function renderCashflow(chartEl, tableEl, months) {
-  const rows = monthRows(months);
-  Charts.columns(chartEl, {
-    rows,
-    series: [
-      { key: 'income', label: 'Income', color: 'var(--series-1)' },
-      { key: 'spending', label: 'Spending', color: 'var(--series-2)' },
-    ],
-    format: money,
-  });
-  Charts.table(tableEl, {
-    rows,
-    columns: [
-      { label: 'Month', get: (r) => r.sub },
-      { label: 'Income', num: true, get: (r) => money(r.income) },
-      { label: 'Spending', num: true, get: (r) => money(r.spending) },
-      { label: 'Net', num: true, get: (r) => money(r.income - r.spending) },
-    ],
-  });
-}
 
 const SOURCE_NOTE = {
   manual: 'You set this category.',
@@ -394,7 +374,7 @@ async function loadOverview() {
     renderAlerts(alerts);
     renderPace(pace);
     renderOverviewBudget(summary);
-    renderCashflow($('#ov-cashflow'), $('#ov-cashflow-table'), insights.months);
+    renderOverviewNet(insights.months);
     const acctById = Object.fromEntries(state.accounts.map((a) => [a.account_id, a]));
     $('#ov-recent').innerHTML = recent.transactions.length
       ? recent.transactions.map((t) => txRow(t, acctById)).join('')
@@ -488,17 +468,17 @@ function renderPace(p) {
 }
 
 // Income above zero, spending below, net income as a line.
-function renderNetIncome(months) {
+function renderNetIncome(months, chartEl = $('#chart-net-income'), tableEl = $('#table-net-income'), noteEl = $('#net-income-best')) {
   const rows = monthRows(months).map((m) => ({ ...m, up: Math.max(0, m.income), down: Math.max(0, m.spending), line: m.income - m.spending }));
-  Charts.diverging($('#chart-net-income'), {
+  Charts.diverging(chartEl, {
     rows, format: money,
     up: { label: 'Income', color: 'var(--series-1)' },
     down: { label: 'Spending', color: 'var(--series-2)' },
     line: { label: 'Net income', color: 'var(--text)' },
   });
   const best = rows.reduce((b, r) => (b && b.line >= r.line ? b : r), null);
-  $('#net-income-best').textContent = best ? `Best month: ${signedMoney(best.line)} in ${best.sub}.` : '';
-  Charts.table($('#table-net-income'), {
+  noteEl.textContent = best ? `Best month: ${signedMoney(best.line)} in ${best.sub}.` : '';
+  Charts.table(tableEl, {
     rows,
     columns: [
       { label: 'Month', get: (r) => r.sub },
@@ -508,6 +488,8 @@ function renderNetIncome(months) {
     ],
   });
 }
+
+const renderOverviewNet = (months) => renderNetIncome(months, $('#ov-cashflow'), $('#ov-cashflow-table'), $('#ov-cashflow-best'));
 
 // Assets above zero, debts below, net worth as a line.
 function renderNetWorth(nw) {
@@ -806,7 +788,6 @@ function renderTrends(d) {
     ],
   });
 
-  renderCashflow($('#chart-months'), $('#table-months'), d.months);
   renderNetIncome(d.months);
   if (cache.netWorth) renderNetWorth(cache.netWorth);
 
@@ -1379,7 +1360,7 @@ new ResizeObserver(([entry]) => {
   if (w === lastWidth) return;
   lastWidth = w;
   if (state.view === 'overview' && cache.overview) {
-    renderCashflow($('#ov-cashflow'), $('#ov-cashflow-table'), cache.overview.insights.months);
+    renderOverviewNet(cache.overview.insights.months);
     renderPace(cache.overview.pace);
   }
   if (state.view === 'trends' && cache.trends) renderTrends(cache.trends);

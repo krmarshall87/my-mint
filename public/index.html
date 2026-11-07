@@ -105,14 +105,16 @@
 
         <div class="panel chart-card">
           <div class="panel-head">
-            <h2>Cash flow · last 12 months</h2>
+            <h2>Net income · last 12 months</h2>
             <ul class="legend">
+              <li><span class="key-line" style="background:var(--text)"></span>Net income</li>
               <li><span class="swatch" style="background:var(--series-1)"></span>Income</li>
               <li><span class="swatch" style="background:var(--series-2)"></span>Spending</li>
             </ul>
           </div>
           <div class="panel-body">
-            <div id="ov-cashflow" class="chart" data-label="Income and spending by month, last 12 months"></div>
+            <div id="ov-cashflow" class="chart" data-label="Income, spending and net income by month, last 12 months"></div>
+            <p id="ov-cashflow-best" class="note-line muted"></p>
             <details class="chart-table"><summary>View as table</summary><div id="ov-cashflow-table"></div></details>
           </div>
         </div>
@@ -219,19 +221,6 @@
           </div>
         </div>
 
-        <div class="panel chart-card">
-          <div class="panel-head">
-            <h2>Cash flow by month</h2>
-            <ul class="legend">
-              <li><span class="swatch" style="background:var(--series-1)"></span>Income</li>
-              <li><span class="swatch" style="background:var(--series-2)"></span>Spending</li>
-            </ul>
-          </div>
-          <div class="panel-body">
-            <div id="chart-months" class="chart" data-label="Income and spending by month"></div>
-            <details class="chart-table"><summary>View as table</summary><div id="table-months"></div></details>
-          </div>
-        </div>
 
         <div class="panel chart-card">
           <div class="panel-head">
