@@ -133,14 +133,17 @@ const SCHEMA = [
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (account_id, security_id)
   )`,
-  // Credit card statements from Plaid Liabilities (JSON), replaced on every sync.
+  // Everything from Plaid Liabilities, one JSON row per account, replaced on every
+  // sync: card statements (kind 'credit') and mortgage / student loan details
+  // (kind 'mortgage' | 'student'). The name predates loans; kept to avoid a migration.
   `CREATE TABLE IF NOT EXISTS card_statements (
     account_id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL,
     data TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
-  // Your own card details (APR, promo, statement for manual cards); never touched by a sync.
+  // Your own details per account, never touched by a sync: for cards (APR, promo,
+  // limit, a manual card's statement) and for loans (rate, payment, escrow, dates).
   `CREATE TABLE IF NOT EXISTS card_settings (
     account_id TEXT PRIMARY KEY,
     data TEXT NOT NULL,
@@ -153,6 +156,7 @@ const SCHEMA = [
   // Added later; one ALTER per statement (CockroachDB).
   `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC`,
   `ALTER TABLE items ADD COLUMN IF NOT EXISTS consent_expires_at TIMESTAMPTZ`,
+  `ALTER TABLE items ADD COLUMN IF NOT EXISTS product_status TEXT`,
   `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
   `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
 ];
@@ -201,6 +205,15 @@ class PgStore {
 
   async setItemConsentExpiry(itemId, at) {
     await this.pool.query('UPDATE items SET consent_expires_at = $2 WHERE item_id = $1', [itemId, at]);
+  }
+
+  // One optional product's status (null = working, or Plaid's error code).
+  async setItemProductStatus(itemId, product, status) {
+    const { rows } = await this.pool.query('SELECT product_status FROM items WHERE item_id = $1', [itemId]);
+    if (!rows.length) return;
+    let current = {};
+    try { current = JSON.parse(rows[0].product_status || '{}'); } catch { /* reset */ }
+    await this.pool.query('UPDATE items SET product_status = $2 WHERE item_id = $1', [itemId, JSON.stringify({ ...current, [product]: status })]);
   }
 
   async deleteItem(itemId) {
@@ -540,6 +553,13 @@ class FileStore {
 
   async setItemConsentExpiry(itemId, at) {
     if (this.data.items[itemId]) this.data.items[itemId].consent_expires_at = at;
+    this.save();
+  }
+
+  async setItemProductStatus(itemId, product, status) {
+    const item = this.data.items[itemId];
+    if (!item) return;
+    item.product_status = { ...(item.product_status || {}), [product]: status };
     this.save();
   }
 

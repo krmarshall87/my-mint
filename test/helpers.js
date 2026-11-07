@@ -28,13 +28,14 @@ async function resetPostgres(url) {
   await c.end();
 }
 
-async function startServer(env = {}, { store = 'file' } = {}) {
+// Pass `dir` from an earlier server's `dir` to restart on the same JSON store.
+async function startServer(env = {}, { store = 'file', dir: reuse = null, keepDb = false } = {}) {
   const port = await freePort();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'my-mint-test-'));
+  const dir = reuse || fs.mkdtempSync(path.join(os.tmpdir(), 'my-mint-test-'));
   const storeEnv = store === 'postgres'
     ? { DATABASE_URL: process.env.TEST_DATABASE_URL }
     : { DATA_FILE: path.join(dir, 'store.json'), DATABASE_URL: '' };
-  if (store === 'postgres') await resetPostgres(process.env.TEST_DATABASE_URL);
+  if (store === 'postgres' && !keepDb) await resetPostgres(process.env.TEST_DATABASE_URL);
   const child = spawn(process.execPath, ['-r', path.join(__dirname, 'fixtures', 'plaid-stub.js'), 'server.js'], {
     cwd: ROOT,
     env: {
@@ -61,13 +62,14 @@ async function startServer(env = {}, { store = 'file' } = {}) {
     return { status: res.status, body: json, text };
   };
   const api = {
-    base, auth, request,
+    base, auth, request, dir,
     get: (url) => request('GET', url),
     post: (url, body = {}) => request('POST', url, body),
     put: (url, body = {}) => request('PUT', url, body),
     del: (url) => request('DELETE', url),
     logs: () => logs,
-    stop: () => new Promise((resolve) => { child.once('exit', resolve); child.kill(); fs.rmSync(dir, { recursive: true, force: true }); }),
+    // keep: leave the store in place for a restart.
+    stop: ({ keep = false } = {}) => new Promise((resolve) => { child.once('exit', resolve); child.kill(); if (!keep) fs.rmSync(dir, { recursive: true, force: true }); }),
   };
   // Wait until the schema is ready (the API answers 503 until then).
   for (let i = 0; i < 100; i++) {

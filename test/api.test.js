@@ -60,6 +60,14 @@ for (const store of stores) {
       assert.equal(sameOrigin.status, 200);
     });
 
+    await t.test('renaming an account shows up in bills right away', async () => {
+      const before = (await api.get('/api/recurring')).body.bills.find((b) => /home mtg/i.test(b.name));
+      assert.ok(before.account);
+      assert.equal((await api.request('PATCH', '/api/accounts/chk', { nickname: 'Joint Checking' })).status, 200);
+      const after = (await api.get('/api/recurring')).body.bills.find((b) => /home mtg/i.test(b.name));
+      assert.match(after.account, /^Joint Checking/);
+    });
+
     await t.test('removing a bank removes its data', async () => {
       const id = (await api.get('/api/items')).body[0].item_id;
       await api.put('/api/cards/disc', { credit_limit: 3000 });
@@ -168,6 +176,22 @@ for (const store of stores) {
         const plan = (await api.get('/api/card-plan')).body;
         assert.equal(plan.status[0].status, 'INVALID_PRODUCT');
         assert.ok(plan.cards.every((c) => c.needs_details));
+      } finally {
+        await api.stop();
+      }
+    });
+
+    await t.test('which permission a bank needs survives a restart', async () => {
+      const first = await startServer({ STUB_MODE: 'consent' }, { store });
+      await linkBank(first);
+      await first.stop({ keep: true });
+      // Restart on the same data. The server doesn't sync on startup, so nothing is re-learned.
+      const api = await startServer({ STUB_MODE: 'consent' }, { store, dir: first.dir, keepDb: true });
+      try {
+        const [item] = (await api.get('/api/items')).body;
+        assert.equal(item.consent_for, 'card statements');
+        assert.equal((await api.get('/api/investments')).body.status[0].status, null);
+        assert.equal((await api.get('/api/card-plan')).body.status[0].status, 'ADDITIONAL_CONSENT_REQUIRED');
       } finally {
         await api.stop();
       }
