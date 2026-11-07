@@ -292,7 +292,7 @@ app.get('/api/items', async (_req, res) => {
   res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => ({
     ...rest,
     manual: isManualItem(rest),
-    ...(rest.error === CONSENT_NEEDED ? { error_text: `One-time OK needed to share ${consentLabel(rest.item_id)}. Click reconnect.` } : {}),
+    ...(rest.error === CONSENT_NEEDED ? { consent_for: consentFor(rest.item_id) } : {}),
   })));
 });
 
@@ -974,11 +974,12 @@ async function productError(item, statusMap, label, err) {
   return { error: code };
 }
 
-function consentLabel(itemId) {
+// What a bank still needs your OK to share, in a few words.
+function consentFor(itemId) {
   const inv = investmentStatus.get(itemId) === CONSENT_NEEDED, card = liabilityStatus.get(itemId) === CONSENT_NEEDED;
-  if (inv && !card) return 'investment details (holdings and activity)';
-  if (card && !inv) return 'credit card statements (balances, due dates and APRs)';
-  return 'investment details and credit card statements';
+  if (inv && !card) return 'investment details';
+  if (card && !inv) return 'card statements';
+  return 'card statements and investments';
 }
 
 // ---------------------------------------------------------- liabilities --
@@ -1646,9 +1647,18 @@ app.get('/api/alerts', async (_req, res) => {
   const b = (t) => ({ t, strong: true });
 
   // Broken bank connections.
-  for (const item of await store.listItems()) {
-    if (item.error === CONSENT_NEEDED) add(`item:${item.item_id}:${item.error}`, 'warning', today, b(item.institution_name), ` needs your OK to share ${consentLabel(item.item_id)}. Click “reconnect” next to it in the accounts list.`);
-    else if (item.error) add(`item:${item.item_id}:${item.error}`, 'critical', today, b(item.institution_name), ` needs attention (${item.error}). Reconnect it from the accounts list.`);
+  // Banks waiting for your OK to share more are one alert, not one each.
+  const allItems = await store.listItems();
+  const consent = allItems.filter((i) => i.error === CONSENT_NEEDED);
+  if (consent.length) {
+    const what = [...new Set(consent.map((i) => consentFor(i.item_id)))];
+    const label = what.length === 1 ? what[0] : 'more details';
+    add(`consent:${consent.map((i) => i.item_id).sort().join(',')}`, 'warning', today,
+      b(consent.map((i) => i.institution_name).join(', ')), ` ${consent.length > 1 ? 'need' : 'needs'} your OK to share ${label}. Click “Share” next to ${consent.length > 1 ? 'each bank' : 'it'} in the accounts list.`);
+  }
+  for (const item of allItems) {
+    if (item.error === CONSENT_NEEDED) continue;
+    if (item.error) add(`item:${item.item_id}:${item.error}`, 'critical', today, b(item.institution_name), ` needs attention (${item.error}). Reconnect it from the accounts list.`);
   }
 
   // Budgets this month.
