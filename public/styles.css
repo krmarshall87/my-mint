@@ -491,3 +491,9 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .dialog details.cycle > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text); }
 .dialog details.cycle[open] > summary { margin-bottom: 8px; }
 .tx-table td.desc .sub.transit { color: var(--link); }
+/* Credit Cards plan: ✎ next to the card's name, and "pay now" / "after a paycheck" group rows. */
+.plan-table .edit-btn { background: none; border: 0; padding: 0 2px; color: var(--link); font-size: 14px; line-height: 1; cursor: pointer; vertical-align: baseline; }
+.plan-table .edit-btn:hover { color: var(--text); }
+.plan-table .link-btn.attention { font-size: 12px; margin-left: 2px; }
+.plan-table tr.plan-group th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--bg); padding-top: 8px; padding-bottom: 6px; border-top: 2px solid var(--border); }
+@media (max-width: 700px) { .plan-table tr.plan-group { display: block; padding: 8px 14px; } .plan-table tr.plan-group th { display: block; padding: 0; background: none; border: 0; } }

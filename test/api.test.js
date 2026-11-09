@@ -116,6 +116,13 @@ for (const store of stores) {
           for (const e of d.timeline.filter((x) => x.type === 'card')) assert.ok(e.balance >= d.buffer - 0.01 || d.totals.below_buffer > 0, `${e.name} on ${e.date}`);
           // Nothing is paid beyond what's owed.
           for (const c of cards) assert.ok(c.pay + c.pay_late <= c.remaining + 0.01, c.name);
+          // "Money's there now" never counts the same dollars twice: together,
+          // those payments fit in checking today, above the buffer.
+          const now = cards.filter((c) => c.funded_by === 'checking');
+          assert.ok(now.reduce((s, c) => s + c.pay, 0) <= d.checking.total - d.buffer + 0.01 || d.totals.below_buffer > 0, 'pay-now cards fit in checking');
+          assert.equal(Math.round((d.totals.pay_now + d.totals.pay_after_paycheck) * 100), Math.round(cards.filter((c) => c.funded_by).reduce((s, c) => s + c.pay, 0) * 100));
+          // The summary looks only as far as the plan does.
+          assert.ok(d.totals.income_plan <= d.totals.income && d.totals.bills_plan <= d.totals.bills);
           if (cash === 20000) {
             assert.equal(d.totals.unpaid, 0);
             assert.equal(d.totals.interest, 0);

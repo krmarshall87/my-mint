@@ -1635,6 +1635,7 @@ async function cardPlan({ buffer }) {
       balance: a.current_balance, ...d, paid_since_statement: paid, remaining,
       minimum, minimum_estimated: d.minimum_payment == null && remaining != null,
       apr: aprAssumed ? DEFAULT_APR() : topApr != null && !(d.promo && !d.promo.from_plaid) && us.get(a.account_id)?.apr == null ? topApr : d.apr, apr_assumed: aprAssumed,
+      apr_mine: us.get(a.account_id)?.apr != null,
       rate_buckets: userRate ? [] : buckets.map((x) => ({ type: x.type, apr: x.apr, balance: x.balance })),
       promo_balance: promoBalance,
       in_transit: transit,
@@ -1739,7 +1740,24 @@ async function cardPlan({ buffer }) {
   for (const c of [...planned].sort((x, y) => x.due_date.localeCompare(y.due_date))) c.pay = round2(c.pay + pay(c, c.remaining - c.pay - c.pay_late, 'statement'));
 
   // When the money for each payment is there: today, or after a paycheck.
+  // Soonest due first, and each card's move to an earlier day is kept, so two
+  // cards never both count on the same dollars being there now.
   const incomeDays = events.filter((e) => e.type === 'income');
+  const early = bal.slice();
+  for (const c of [...planned].sort((x, y) => x.due_date.localeCompare(y.due_date))) {
+    const mine = payments.filter((p) => p.account_id === c.account_id && p.kind !== 'extra');
+    if (!mine.length) continue;
+    const t = Math.max(...mine.map((p) => p.day));
+    const amt = round2(mine.reduce((s, p) => s + p.amount, 0));
+    // Earliest day it could go out instead: moving it earlier takes it out of
+    // those days' balances too, and none may dip below the buffer.
+    let from = t;
+    while (from > 0 && early[from - 1] - amt >= buffer - 0.005) from--;
+    for (let i = from; i < t; i++) early[i] -= amt;
+    c.pay_from = fromDayNum(dayNum(today) + from);
+    const paycheck = [...incomeDays].reverse().find((e) => idx(e.date) <= from && idx(e.date) > 0);
+    c.funded_by = from === 0 || !paycheck ? 'checking' : { name: paycheck.name, date: paycheck.date };
+  }
   for (const c of cards) {
     c.pay ??= 0;
     c.pay_late ??= 0;
@@ -1771,17 +1789,6 @@ async function cardPlan({ buffer }) {
       m[k].amount = round2(m[k].amount + p.amount);
       return m;
     }, {})).sort((x, y) => x.date.localeCompare(y.date));
-    const mine = payments.filter((p) => p.account_id === c.account_id && p.kind !== 'extra');
-    if (mine.length) {
-      const t = Math.max(...mine.map((p) => p.day));
-      // Earliest day it could go out instead: moving it earlier takes it out of
-      // those days' balances too, and none may dip below the buffer.
-      let from = t;
-      while (from > 0 && bal[from - 1] - c.pay >= buffer - 0.005) from--;
-      c.pay_from = fromDayNum(dayNum(today) + from);
-      const paycheck = [...incomeDays].reverse().find((e) => idx(e.date) <= from && idx(e.date) > 0);
-      c.funded_by = from === 0 || !paycheck ? 'checking' : { name: paycheck.name, date: paycheck.date };
-    }
   }
 
   const totalDue = round2(planned.reduce((s, c) => s + c.remaining, 0));
@@ -1843,6 +1850,14 @@ async function cardPlan({ buffer }) {
     totals: {
       income: round2(events.filter((e) => e.type === 'income').reduce((s, e) => s + e.amount, 0)),
       bills: round2(-events.filter((e) => e.type === 'bill').reduce((s, e) => s + e.amount, 0)),
+      // The same, only up to the last due date planned for (what the summary shows).
+      income_plan: round2(events.filter((e) => e.type === 'income' && e.date <= end).reduce((s, e) => s + e.amount, 0)),
+      bills_plan: round2(-events.filter((e) => e.type === 'bill' && e.date <= end).reduce((s, e) => s + e.amount, 0)),
+      // Card payments the money's in checking for today, and those waiting on a paycheck.
+      pay_now: round2(cards.filter((c) => c.funded_by === 'checking').reduce((s, c) => s + c.pay, 0)),
+      pay_after_paycheck: round2(cards.filter((c) => c.funded_by && c.funded_by !== 'checking').reduce((s, c) => s + c.pay, 0)),
+      cards_paid: planned.filter((c) => c.pay >= c.remaining - 0.005).length,
+      last_due: planned.length ? lastDue : null,
       due: totalDue, pay: totalPay, pay_late: totalLate, unpaid, minimum_short: minShort,
       interest, card_debt: cardDebt,
       credit_limit: totalLimit, utilization, cards_without_limit: cards.length - limited.length,
