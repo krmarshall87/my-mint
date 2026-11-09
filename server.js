@@ -120,10 +120,16 @@ app.get('/healthz', (_req, res) => res.send('ok'));
 
 // Icons are served without auth: browsers and iOS home screens fetch them
 // without credentials, and they contain no data.
-const PUBLIC_ICONS = ['/favicon.ico', '/favicon.svg', '/apple-touch-icon.png'];
-app.get(PUBLIC_ICONS, (req, res) => {
+// Older iPhones ask for the "-precomposed" name at the site root, so it serves the same file.
+const PUBLIC_ICONS = {
+  '/favicon.ico': 'favicon.ico', '/favicon.svg': 'favicon.svg',
+  '/apple-touch-icon.png': 'apple-touch-icon.png', '/apple-touch-icon-precomposed.png': 'apple-touch-icon.png',
+  '/icon-192.png': 'icon-192.png', '/icon-512.png': 'icon-512.png', '/manifest.webmanifest': 'manifest.webmanifest',
+};
+app.get(Object.keys(PUBLIC_ICONS), (req, res) => {
   res.set('Cache-Control', 'public, max-age=604800');
-  res.sendFile(path.join(__dirname, 'public', req.path));
+  if (req.path.endsWith('.webmanifest')) res.type('application/manifest+json');
+  res.sendFile(path.join(__dirname, 'public', PUBLIC_ICONS[req.path]));
 });
 
 // Lock out an IP after too many wrong passwords.

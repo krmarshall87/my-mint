@@ -52,6 +52,10 @@ for (const store of stores) {
     await t.test('requires the password, and blocks cross-site writes', async () => {
       assert.equal((await fetch(`${api.base}/api/items`)).status, 401);
       assert.equal((await fetch(`${api.base}/healthz`)).status, 200);
+      for (const icon of ['/favicon.ico', '/favicon.svg', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png', '/icon-192.png', '/icon-512.png', '/manifest.webmanifest']) {
+        assert.equal((await fetch(api.base + icon)).status, 200, `${icon} is public`);
+      }
+      assert.equal((await fetch(`${api.base}/app.js`)).status, 401, 'everything else needs the password');
       const cross = await api.request('POST', '/api/sync', {}, { origin: 'https://evil.example' });
       assert.equal(cross.status, 403);
       const crossSite = await api.request('POST', '/api/sync', {}, { 'sec-fetch-site': 'cross-site' });
