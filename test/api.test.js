@@ -159,16 +159,25 @@ for (const store of stores) {
       assert.equal(citi.interest_if_unpaid, Math.round(((3000 - 1000) * 29.99 / 1200) * 100) / 100);
     });
 
-    await t.test('a payment that left checking counts before it reaches the card', async () => {
+    await t.test('a payment that left checking counts before it reaches the card, if it\'s clearly for that card', async () => {
       const chase = await card('chase');
-      assert.deepEqual(chase.in_transit.map((p) => [p.amount, p.pending]), [[300, true]]);
-      assert.equal(chase.paid_since_statement, 300);
-      assert.equal(chase.remaining, 1500);
+      // $40 = Chase's minimum: counted.
+      assert.deepEqual(chase.in_transit.map((p) => [p.amount, p.pending]), [[40, true]]);
+      assert.equal(chase.paid_since_statement, 40);
+      assert.equal(chase.remaining, 1760);
+      // $800 matches nothing Chase asked for: shown, not counted.
+      assert.deepEqual(chase.possible_transit.map((p) => p.amount), [800]);
+      // The $500 transfer to Chase savings isn't a card payment at all.
+      assert.ok(![...chase.in_transit, ...chase.possible_transit].some((p) => p.amount === 500));
     });
 
-    await t.test('the bank\'s past-due flag raises an alert', async () => {
-      assert.equal((await card('chase')).bank_overdue, true);
-      const alert = (await api.get('/api/alerts')).body.find((a) => a.id.startsWith('overdue:chase'));
+    await t.test('the bank\'s past-due flag raises an alert until the minimum is paid', async () => {
+      // Chase's $40 minimum is on the way, so it's no longer past due.
+      assert.equal((await card('chase')).bank_overdue, false);
+      assert.ok(!(await api.get('/api/alerts')).body.some((a) => a.id.startsWith('overdue:chase')));
+      // Discover is past due with its $35 minimum unpaid: critical alert.
+      assert.equal((await card('disc')).bank_overdue, true);
+      const alert = (await api.get('/api/alerts')).body.find((a) => a.id.startsWith('overdue:disc'));
       assert.equal(alert.level, 'critical');
     });
 

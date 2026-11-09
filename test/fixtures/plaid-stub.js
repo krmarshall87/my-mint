@@ -48,7 +48,12 @@ added.push(tx('citi', ymd(Y, M - 1, 28), 'PAYMENT THANK YOU', -500, pfc('LOAN_PA
 added.push(tx('onep', rel(-1), 'WALMART', 83.24, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_SUPERSTORES')));
 added.push(tx('onep', rel(-2), 'WALMART', 100, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_SUPERSTORES')));
 // A Chase payment that has left checking but hasn't reached the card yet.
-added.push({ ...tx('chk', rel(-1), 'CHASE CREDIT CRD AUTOPAY', 300, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT')), pending: true, counterparties: [{ name: 'Chase', type: 'financial_institution' }] });
+// The minimum ($40), so it's clearly for Chase Freedom.
+added.push({ ...tx('chk', rel(-1), 'CHASE CREDIT CRD AUTOPAY', 40, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT')), pending: true, counterparties: [{ name: 'Chase', type: 'financial_institution' }] });
+// An amount Chase Freedom never asked for: maybe another Chase card that isn't linked.
+added.push(tx('chk', rel(-2), 'CHASE CREDIT CRD EPAY', 800, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT')));
+// A transfer to savings at the same bank: not a card payment at all.
+added.push(tx('chk', rel(-2), 'ONLINE TRANSFER TO CHASE SAVINGS', 500, pfc('TRANSFER_OUT', 'TRANSFER_OUT_ACCOUNT_TRANSFER')));
 added.push(tx('citi', ymd(Y, M - 1, 29), 'AMAZON REFUND', -40, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_ONLINE_MARKETPLACES')));
 Object.assign(PlaidApi.prototype, {
   itemPublicTokenExchange: (r) => ok({ access_token: 'access-sandbox-stub', item_id: r.public_token === 'p' ? 'item-stub' : r.public_token }),
@@ -69,7 +74,7 @@ Object.assign(PlaidApi.prototype, {
       last_payment_amount: 500, last_payment_date: ymd(Y, M - 1, 28), last_statement_balance: 3500, last_statement_issue_date: ymd(Y, M - 1, 15), minimum_payment_amount: 105, next_payment_due_date: rel(5) },
     { account_id: 'chase', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 22.49 }], is_overdue: true,
       last_payment_amount: 1200, last_payment_date: ymd(Y, M - 1, 10), last_statement_balance: 1800, last_statement_issue_date: ymd(Y, M - 1, 22), minimum_payment_amount: 40, next_payment_due_date: rel(12) },
-    { account_id: 'disc', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 0 }], is_overdue: false,
+    { account_id: 'disc', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 0 }], is_overdue: true,
       last_payment_amount: null, last_payment_date: null, last_statement_balance: 700, last_statement_issue_date: ymd(Y, M - 1, 30), minimum_payment_amount: 35, next_payment_due_date: rel(20) },
   ], mortgage: [{ account_id: 'mtg', account_number: '3120194012', interest_rate: { percentage: 6.25, type: 'fixed' }, next_monthly_payment: 1800, next_payment_due_date: rel(8), last_payment_amount: 1800, last_payment_date: rel(-23), maturity_date: '2053-06-01', origination_date: '2023-06-01', origination_principal_amount: 255000, loan_term: '30 year', loan_type_description: 'conventional', escrow_balance: 2100.5, has_pmi: true, has_prepayment_penalty: false, past_due_amount: 0, ytd_interest_paid: 13900, ytd_principal_paid: 2600 }], student: [] } }),
 });

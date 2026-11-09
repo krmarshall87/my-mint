@@ -103,4 +103,9 @@ test('term is parsed, or worked out from the dates', () => {
   assert.equal(loanProgress({ ...mortgage, term: null }).totalPayments, 360);
   assert.equal(loanProgress({ ...mortgage, term: null }).paymentNumber, 88);
   assert.equal(loanProgress({ ...mortgage, originalPrincipal: null }), null);
+  // Without a payoff date the first payment is still the second month after closing.
+  const noPayoff = loanProgress({ ...mortgage, maturity: null });
+  assert.equal(noPayoff.firstPayment, '2019-09');
+  assert.equal(noPayoff.paymentNumber, 88);
+  assert.equal(noPayoff.monthsAhead, 0);
 });

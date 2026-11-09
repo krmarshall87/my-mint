@@ -1498,6 +1498,10 @@ function renderPlanTable(d) {
       ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since${c.in_transit?.length ? ' (incl. on the way)' : ''}` : ''}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : ''}`
       : `Balance ${money(c.balance || 0)} · no statement yet`;
     name.append(el('div', { class: 'sub' }, sub));
+    for (const p of c.possible_transit || []) {
+      name.append(el('div', { class: 'sub muted', title: 'Not counted: the amount doesn’t match this card’s statement and the description doesn’t show its last 4, so it may be for another card at the same bank.' },
+        `Possibly on the way: ${money(p.amount)} sent ${shortDate(p.date)} (not counted)`));
+    }
     for (const p of c.in_transit || []) {
       name.append(el('div', { class: 'sub transit' }, `On the way: ${money(p.amount)} sent ${shortDate(p.date)}${p.pending ? ' (pending)' : ''}, not on the card yet`));
     }
@@ -1778,7 +1782,9 @@ function loanPanel(loan, today) {
   if (progress) {
     fact('Payment number', `#${progress.paymentNumber} of ${progress.totalPayments}`, 'calculated', `${progress.totalPayments - progress.paymentNumber + 1} left on the original schedule`);
     const m = progress.monthsAhead, gap = Math.abs(progress.difference);
-    const [text, note] = Math.abs(m) <= 0 && gap < 200 ? ['On schedule', `balance matches the original ${money(progress.originalPayment)}/mo schedule`]
+    // Within the same month of the schedule is "on schedule", whichever way the dollars lean.
+    const [text, note] = m === 0 ? ['On schedule', gap < 1 ? `balance matches the original ${money(progress.originalPayment)}/mo schedule`
+        : `${money(gap)} ${progress.difference > 0 ? 'less' : 'more'} owed than the original schedule`]
       : m > 0 ? [`${m} month${m === 1 ? '' : 's'} ahead`, `${money(gap)} less owed than the original schedule`]
       : [`${-m} month${m === -1 ? '' : 's'} behind`, `${money(gap)} more owed than the original schedule`];
     fact('Progress', text, 'calculated', note);

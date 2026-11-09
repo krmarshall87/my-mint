@@ -41,6 +41,7 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await page.goto(`${api.base}/#loans`);
   await page.waitForTimeout(800);
   assert.match(await page.locator('.loan', { hasText: 'Auto Loan' }).innerText(), /Add the interest rate to see the payoff schedule/);
+  assert.doesNotMatch(await page.locator('#view-loans').innerText(), /\b0 months? (ahead|behind)/, 'never "0 months behind"');
   // The mortgage knows where it stands on its original schedule.
   assert.match(await page.locator('.loan', { hasText: 'Home Mortgage' }).innerText(), /#\d+ of 360[\s\S]*(On schedule|months? (ahead|behind))/);
   // The alert's "Add it" opens that loan's dialog with the rate marked as needed.
