@@ -1377,10 +1377,11 @@ function rawLinks(node, status) {
   banks.forEach((b, i) => {
     if (i) node.append(' · ');
     node.append(`${b.institution} (`);
-    for (const [j, product] of ['liabilities', 'accounts'].entries()) {
+    const LINKS = { liabilities: 'statements', accounts: 'balances & limits', item: 'permissions', institution: 'what the bank supports' };
+    Object.entries(LINKS).forEach(([product, label], j) => {
       if (j) node.append(', ');
-      node.append(el('a', { href: `/api/plaid-raw/${encodeURIComponent(b.item_id)}/${product}`, target: '_blank', rel: 'noopener noreferrer' }, product === 'liabilities' ? 'statements' : 'balances & limits'));
-    }
+      node.append(el('a', { href: `/api/plaid-raw/${encodeURIComponent(b.item_id)}/${product}`, target: '_blank', rel: 'noopener noreferrer' }, label));
+    });
     node.append(')');
   });
 }

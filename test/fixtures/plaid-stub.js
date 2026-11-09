@@ -49,7 +49,8 @@ Object.assign(PlaidApi.prototype, {
   itemRemove: () => ok({}),
   transactionsSync: () => ok({ added, modified: [], removed: [], accounts: accounts.filter((a) => a.type !== 'investment'), has_more: false, next_cursor: 'cur1' }),
   accountsGet: () => ok({ accounts }),
-  itemGet: () => ok({ item: { consent_expiration_time: process.env.STUB_EXPIRY_DAYS ? new Date(Date.now() + Number(process.env.STUB_EXPIRY_DAYS) * 864e5).toISOString() : null } }),
+  institutionsGetById: ({ institution_id }) => ok({ institution: { institution_id, name: 'Platypus Bank', products: (process.env.STUB_INST_PRODUCTS || 'transactions,liabilities,investments').split(','), oauth: false } }),
+  itemGet: () => ok({ item: { consented_products: mode === 'consent' ? ['transactions', 'investments'] : ['transactions', 'investments', 'liabilities'], consent_expiration_time: process.env.STUB_EXPIRY_DAYS ? new Date(Date.now() + Number(process.env.STUB_EXPIRY_DAYS) * 864e5).toISOString() : null } }),
   investmentsHoldingsGet: () => ok({ securities: [], holdings: [] }),
   investmentsTransactionsGet: () => ok({ securities: [], total_investment_transactions: 0, investment_transactions: [] }),
   liabilitiesGet: () => mode === 'consent' ? fail('ADDITIONAL_CONSENT_REQUIRED') : mode === 'noliab' ? fail('INVALID_PRODUCT') : ok({ liabilities: { credit: [
