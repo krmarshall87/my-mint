@@ -20,6 +20,8 @@ function txFromPlaid(t, itemId) {
     pending: !!t.pending,
     payment_channel: t.payment_channel || null,
     logo_url: t.logo_url || t.personal_finance_category_icon_url || null,
+    // Who the money went to or came from, e.g. which card issuer a payment was for.
+    counterparty: (t.counterparties || []).map((c) => c.name).filter(Boolean).join(', ') || null,
   };
 }
 
@@ -157,6 +159,7 @@ const SCHEMA = [
   `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS credit_limit NUMERIC`,
   `ALTER TABLE items ADD COLUMN IF NOT EXISTS consent_expires_at TIMESTAMPTZ`,
   `ALTER TABLE items ADD COLUMN IF NOT EXISTS product_status TEXT`,
+  `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty TEXT`,
   `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
   `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
 ];
@@ -254,12 +257,15 @@ class PgStore {
       }
       for (const t of [...added, ...modified].map((x) => txFromPlaid(x, itemId))) {
         await client.query(
-          `INSERT INTO transactions VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          `INSERT INTO transactions (transaction_id, account_id, item_id, date, authorized_date, name, merchant_name, amount,
+             iso_currency_code, category, category_detailed, pending, payment_channel, logo_url, counterparty)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
            ON CONFLICT (transaction_id) DO UPDATE SET
              account_id=$2, date=$4, authorized_date=$5, name=$6, merchant_name=$7,
              amount=$8, iso_currency_code=$9, category=$10, category_detailed=$11,
-             pending=$12, payment_channel=$13, logo_url=$14`,
-          Object.values(t),
+             pending=$12, payment_channel=$13, logo_url=$14, counterparty=$15`,
+          [t.transaction_id, t.account_id, t.item_id, t.date, t.authorized_date, t.name, t.merchant_name, t.amount,
+            t.iso_currency_code, t.category, t.category_detailed, t.pending, t.payment_channel, t.logo_url, t.counterparty],
         );
       }
       if (removed.length) {
@@ -500,7 +506,7 @@ class PgStore {
       `SELECT transaction_id, account_id, item_id,
               date::text AS date, authorized_date::text AS authorized_date,
               name, merchant_name, amount::float AS amount, iso_currency_code,
-              category, category_detailed, pending, payment_channel, logo_url
+              category, category_detailed, pending, payment_channel, logo_url, counterparty
        FROM transactions ${clause}
        ORDER BY date DESC, transaction_id
        LIMIT ${p(f.limit)} OFFSET ${p(f.offset)}`,

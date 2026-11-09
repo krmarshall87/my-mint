@@ -125,7 +125,9 @@ for (const store of stores) {
             // Extra money goes to interest-bearing cards first: the 0% promo card only gets its minimum.
             const promo = cards.find((c) => c.account_id === 'disc');
             assert.ok(promo.promo);
-            assert.ok(promo.pay <= promo.minimum + 0.01);
+            // More than its minimum only once every interest-charging balance is covered.
+            const interestLeft = cards.filter((c) => !c.promo).some((c) => c.remaining - (c.promo_balance || 0) - c.pay - c.pay_late > 0.01);
+            if (interestLeft) assert.ok(promo.pay <= promo.minimum + 0.01, 'promo card only gets its minimum');
             assert.ok(d.suggestions.some((s) => s.type === 'savings'), 'suggests savings');
             assert.ok(!d.suggestions.some((s) => s.type === 'investments'), 'card debt is under the investment threshold');
           }
@@ -139,6 +141,60 @@ for (const store of stores) {
         }
       });
     }
+  });
+
+  test(`[${store}] card plan accuracy`, async (t) => {
+    const api = await startServer({ STUB_CASH: '3200' }, { store });
+    t.after(() => api.stop());
+    await linkBank(api);
+    const card = async (id) => (await api.get('/api/card-plan')).body.cards.find((c) => c.account_id === id);
+
+    await t.test('interest uses the bank\'s rate per balance, and a 0% part needn\'t be paid', async () => {
+      const citi = await card('citi');
+      assert.deepEqual(citi.rate_buckets.map((b) => [b.apr, b.balance]), [[0, 1000], [29.99, 2500]]);
+      assert.equal(citi.promo_balance, 1000);
+      assert.equal(citi.promo, null, 'not a promo card: most of it is at 29.99%');
+      assert.equal(citi.apr, 29.99);
+      // Unpaid money sits at the lowest rate first: $1,000 of it is free.
+      assert.equal(citi.interest_if_unpaid, Math.round(((3000 - 1000) * 29.99 / 1200) * 100) / 100);
+    });
+
+    await t.test('a payment that left checking counts before it reaches the card', async () => {
+      const chase = await card('chase');
+      assert.deepEqual(chase.in_transit.map((p) => [p.amount, p.pending]), [[300, true]]);
+      assert.equal(chase.paid_since_statement, 300);
+      assert.equal(chase.remaining, 1500);
+    });
+
+    await t.test('the bank\'s past-due flag raises an alert', async () => {
+      assert.equal((await card('chase')).bank_overdue, true);
+      const alert = (await api.get('/api/alerts')).body.find((a) => a.id.startsWith('overdue:chase'));
+      assert.equal(alert.level, 'critical');
+    });
+
+    await t.test('a statement cycle works out a statement the bank doesn\'t share', async () => {
+      let onep = await card('onep');
+      assert.equal(onep.needs_details, true);
+      assert.deepEqual(onep.missing, ['statement', 'APR']);
+      assert.equal((await api.put('/api/cards/onep', { closing_day: 5 })).status, 400, 'needs both days');
+      assert.equal((await api.put('/api/cards/onep', { closing_day: 40, due_day: 1 })).status, 400);
+      // Close yesterday-ish is too fiddly for a date-independent test: close on the 1st, due on the 28th.
+      assert.equal((await api.put('/api/cards/onep', { closing_day: 1, due_day: 28, min_floor: 40, min_pct: 1, apr: 28.99 })).status, 200);
+      onep = await card('onep');
+      assert.equal(onep.source, 'cycle');
+      assert.equal(onep.needs_details, false);
+      assert.deepEqual(onep.missing, []);
+      assert.equal(onep.statement_date.slice(8), '01');
+      assert.equal(onep.due_date.slice(8), '28');
+      assert.ok(onep.due_date > onep.statement_date);
+      // Balance on the closing day = today's balance minus what posted since.
+      const since = (await api.get('/api/transactions?account_id=onep&limit=100')).body.transactions
+        .filter((x) => !x.pending && x.date > onep.statement_date).reduce((s, x) => s + x.amount, 0);
+      assert.equal(onep.statement_balance, Math.round((1483.24 - since) * 100) / 100);
+      // Minimum: the greater of $40 or 1% of it.
+      assert.equal(onep.minimum_payment, Math.round(Math.max(40, onep.statement_balance * 0.01) * 100) / 100);
+      assert.ok(!(await api.get('/api/alerts')).body.some((a) => a.id.startsWith('missing:onep:')));
+    });
   });
 
   test(`[${store}] loans`, async (t) => {

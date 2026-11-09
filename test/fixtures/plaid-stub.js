@@ -17,6 +17,8 @@ const accounts = [
   { account_id: 'mtg', name: 'Home Mortgage', mask: '7777', type: 'loan', subtype: 'mortgage', balances: { current: Number(process.env.STUB_MTG || 245000) } },
   { account_id: 'car', name: 'Auto Loan', mask: '8888', type: 'loan', subtype: 'auto', balances: { current: 18500 } },
   { account_id: 'disc', name: 'Discover It', mask: '4444', type: 'credit', subtype: 'credit card', balances: { current: 900 } },
+  // A card whose bank shares balances and the limit, but no statements (like OnePay).
+  { account_id: 'onep', name: 'OnePay Cash Rewards Card', mask: '3377', type: 'credit', subtype: 'credit card', balances: { current: 1483.24, limit: 15000 } },
   { account_id: 'brk', name: 'Brokerage', mask: '5555', type: 'investment', subtype: 'brokerage', balances: { current: 12000 } },
   { account_id: 'ira', name: 'IRA', mask: '6666', type: 'investment', subtype: 'ira', balances: { current: 40000 } },
 ];
@@ -32,12 +34,21 @@ for (let k = 6; k >= 0; k--) {
   push(15, 'chk', 'US BANK HOME MTG', 1800, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_MORTGAGE_PAYMENT'));
   push(10, 'chk', 'OPPD ELECTRIC', 140 + k * 5, pfc('RENT_AND_UTILITIES', 'RENT_AND_UTILITIES_GAS_AND_ELECTRICITY'));
   push(5, 'chase', 'NETFLIX', 15.49, pfc('ENTERTAINMENT', 'ENTERTAINMENT_TV_AND_MOVIES'));
-  push(8, 'chk', 'CITI CARD PAYMENT', 600, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT'));
+  // Past months' Citi payments, with the card-side half posting a day later.
+  if (k >= 1) {
+    push(8, 'chk', 'CITI CARD PAYMENT', 600, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT'));
+    if (k >= 2) push(9, 'citi', 'ONLINE PAYMENT THANK YOU', -600, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT'));
+  }
   push(15, 'mtg', 'PAYMENT RECEIVED', -1800, null);
   push(3, 'car', 'PAYMENT', -450, null);
   push(12, 'citi', 'INTEREST CHARGE ON PURCHASES', 61.2, pfc('BANK_FEES', 'BANK_FEES_INTEREST_CHARGE'));
 }
 added.push(tx('citi', ymd(Y, M - 1, 28), 'PAYMENT THANK YOU', -500, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT')));
+// Purchases on the OnePay-like card in the last few days (after its statement closed).
+added.push(tx('onep', rel(-1), 'WALMART', 83.24, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_SUPERSTORES')));
+added.push(tx('onep', rel(-2), 'WALMART', 100, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_SUPERSTORES')));
+// A Chase payment that has left checking but hasn't reached the card yet.
+added.push({ ...tx('chk', rel(-1), 'CHASE CREDIT CRD AUTOPAY', 300, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT')), pending: true, counterparties: [{ name: 'Chase', type: 'financial_institution' }] });
 added.push(tx('citi', ymd(Y, M - 1, 29), 'AMAZON REFUND', -40, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_ONLINE_MARKETPLACES')));
 Object.assign(PlaidApi.prototype, {
   itemPublicTokenExchange: (r) => ok({ access_token: 'access-sandbox-stub', item_id: r.public_token === 'p' ? 'item-stub' : r.public_token }),
@@ -54,9 +65,9 @@ Object.assign(PlaidApi.prototype, {
   investmentsHoldingsGet: () => ok({ securities: [], holdings: [] }),
   investmentsTransactionsGet: () => ok({ securities: [], total_investment_transactions: 0, investment_transactions: [] }),
   liabilitiesGet: () => mode === 'consent' ? fail('ADDITIONAL_CONSENT_REQUIRED') : mode === 'noliab' ? fail('INVALID_PRODUCT') : ok({ liabilities: { credit: [
-    { account_id: 'citi', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 29.99, balance_subject_to_apr: 3500, interest_charge_amount: 61.2 }, { apr_type: 'cash_apr', apr_percentage: 31.99 }], is_overdue: false,
+    { account_id: 'citi', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 29.99, balance_subject_to_apr: 2500, interest_charge_amount: 61.2 }, { apr_type: 'balance_transfer_apr', apr_percentage: 0, balance_subject_to_apr: 1000 }, { apr_type: 'cash_apr', apr_percentage: 31.99 }], is_overdue: false,
       last_payment_amount: 500, last_payment_date: ymd(Y, M - 1, 28), last_statement_balance: 3500, last_statement_issue_date: ymd(Y, M - 1, 15), minimum_payment_amount: 105, next_payment_due_date: rel(5) },
-    { account_id: 'chase', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 22.49 }], is_overdue: false,
+    { account_id: 'chase', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 22.49 }], is_overdue: true,
       last_payment_amount: 1200, last_payment_date: ymd(Y, M - 1, 10), last_statement_balance: 1800, last_statement_issue_date: ymd(Y, M - 1, 22), minimum_payment_amount: 40, next_payment_due_date: rel(12) },
     { account_id: 'disc', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 0 }], is_overdue: false,
       last_payment_amount: null, last_payment_date: null, last_statement_balance: 700, last_statement_issue_date: ymd(Y, M - 1, 30), minimum_payment_amount: 35, next_payment_due_date: rel(20) },
