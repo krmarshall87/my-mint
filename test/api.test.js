@@ -82,6 +82,10 @@ for (const store of stores) {
       assert.ok(!JSON.stringify(raw).includes('access-sandbox'), 'no access token');
       const accounts = (await api.get(`/api/plaid-raw/${id}/accounts`)).body;
       assert.equal(accounts.response.accounts.find((a) => a.account_id === 'disc').balances.limit, undefined, 'Discover sends no limit');
+      const raw2 = (await api.get(`/api/plaid-raw/${id}/item`)).body;
+      assert.ok(raw2.response.item.consented_products.includes('liabilities'));
+      const inst = (await api.get(`/api/plaid-raw/${id}/institution`)).body;
+      assert.ok(inst.response.institution.products.includes('liabilities'));
       assert.equal((await api.get(`/api/plaid-raw/${id}/transactions`)).status, 400);
       assert.equal((await api.get('/api/plaid-raw/nope/accounts')).status, 404);
       assert.equal((await fetch(`${api.base}/api/plaid-raw/${id}/accounts`)).status, 401);
@@ -194,6 +198,20 @@ for (const store of stores) {
         assert.match(api.logs(), /LINK \{"c":\["investments","liabilities"\],"u":\{"account_selection_enabled":true\}/);
         // Investments worked, so the Investments tab must not claim it needs consent.
         assert.equal((await api.get('/api/investments')).body.status[0].status, null);
+      } finally {
+        await api.stop();
+      }
+    });
+
+    await t.test('a bank that can\'t share card statements stops asking for consent', async () => {
+      const api = await startServer({ STUB_MODE: 'consent', STUB_INST_PRODUCTS: 'transactions,investments' }, { store });
+      try {
+        await linkBank(api);
+        const [item] = (await api.get('/api/items')).body;
+        assert.equal(item.error, null, 'no consent error to fix');
+        assert.equal(item.consent_for, undefined);
+        assert.ok(!(await api.get('/api/alerts')).body.some((a) => a.id.startsWith('consent:')));
+        assert.equal((await api.get('/api/card-plan')).body.status[0].status, 'PRODUCTS_NOT_SUPPORTED');
       } finally {
         await api.stop();
       }

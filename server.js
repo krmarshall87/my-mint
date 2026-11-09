@@ -324,9 +324,13 @@ app.post('/api/sync', async (_req, res) => {
 
 // What Plaid actually returns for a bank, unprocessed, to check what a bank
 // does and doesn't send. Fetched live; account and routing numbers are masked.
+// item: which products this connection has consent for (consented_products)
+// and uses; institution: which products the bank supports through Plaid.
 const RAW_PRODUCTS = {
-  accounts: (token) => plaid.accountsGet({ access_token: token }),
-  liabilities: (token) => plaid.liabilitiesGet({ access_token: token }),
+  accounts: (item) => plaid.accountsGet({ access_token: item.access_token }),
+  liabilities: (item) => plaid.liabilitiesGet({ access_token: item.access_token }),
+  item: (item) => plaid.itemGet({ access_token: item.access_token }),
+  institution: (item) => plaid.institutionsGetById({ institution_id: item.institution_id, country_codes: [CountryCode.Us] }),
 };
 const maskNumbers = (v, key = '') => {
   if (Array.isArray(v)) return v.map((x) => maskNumbers(x, key));
@@ -341,7 +345,7 @@ app.get('/api/plaid-raw/:item/:product', async (req, res) => {
   if (!item) return res.status(404).json({ error_message: 'Unknown bank' });
   if (isManualItem(item)) return res.status(400).json({ error_message: 'Manual accounts have no Plaid data' });
   try {
-    const { data } = await call(item.access_token);
+    const { data } = await call(item);
     res.json({ institution: item.institution_name, product: req.params.product, fetched_at: new Date().toISOString(), response: maskNumbers(data) });
   } catch (err) {
     res.status(502).json({ institution: item.institution_name, product: req.params.product, plaid_error: plaidError(err) });
@@ -1042,7 +1046,15 @@ async function syncInvestments(item, accounts, cursor) {
 // Optional products (Investments, Liabilities) fail on their own without
 // breaking the sync. The bank may want your OK first: "reconnect" asks for it.
 async function productError(item, product, err) {
-  const code = err.response?.data?.error_code || err.message;
+  let code = err.response?.data?.error_code || err.message;
+  // Plaid asks for consent even when the bank can't share the product at all,
+  // and reconnecting can't fix that. Check what the bank supports first.
+  if (code === CONSENT_NEEDED && item.institution_id) {
+    try {
+      const { data } = await plaid.institutionsGetById({ institution_id: item.institution_id, country_codes: [CountryCode.Us] });
+      if (Array.isArray(data.institution?.products) && !data.institution.products.includes(product)) code = 'PRODUCTS_NOT_SUPPORTED';
+    } catch { /* can't tell; keep asking */ }
+  }
   await store.setItemProductStatus(item.item_id, product, code);
   if (code === CONSENT_NEEDED) await store.setItemError(item.item_id, CONSENT_NEEDED);
   else console.error(product, item.institution_name, code);
