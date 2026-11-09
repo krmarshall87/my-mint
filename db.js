@@ -165,6 +165,17 @@ const SCHEMA = [
 ];
 
 const SERIALIZATION_FAILURE = '40001'; // CockroachDB asks clients to retry these
+// Runs a transaction again when CockroachDB asks (40001), with backoff.
+async function retrying(fn) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err.code !== SERIALIZATION_FAILURE || attempt >= 5) throw err;
+      await new Promise((r) => setTimeout(r, 100 * 2 ** attempt));
+    }
+  }
+}
 
 // SSL follows the URL's sslmode (e.g. ?sslmode=verify-full for CockroachDB Cloud).
 // PGSSL=true forces SSL without certificate verification for hosts that need it.
@@ -231,14 +242,28 @@ class PgStore {
   }
 
   async applySync(itemId, batch) {
-    for (let attempt = 1; ; attempt++) {
+    return retrying(() => this.applySyncOnce(itemId, batch));
+  }
+
+  // A re-linked bank's new account takes over the old one's nickname, your card
+  // or loan details, balance history and rules (where it has none of its own).
+  async moveAccountData(from, to) {
+    return retrying(async () => {
+      const client = await this.pool.connect();
       try {
-        return await this.applySyncOnce(itemId, batch);
+        await client.query('BEGIN');
+        await client.query(`INSERT INTO account_nicknames (account_id, nickname) SELECT $2, nickname FROM account_nicknames WHERE account_id = $1 ON CONFLICT (account_id) DO NOTHING`, [from, to]);
+        await client.query(`INSERT INTO card_settings (account_id, data) SELECT $2, data FROM card_settings WHERE account_id = $1 ON CONFLICT (account_id) DO NOTHING`, [from, to]);
+        await client.query(`UPDATE balance_snapshots SET account_id = $2 WHERE account_id = $1 AND date NOT IN (SELECT date FROM balance_snapshots WHERE account_id = $2)`, [from, to]);
+        await client.query('UPDATE tx_rules SET account_id = $2 WHERE account_id = $1', [from, to]);
+        await client.query('COMMIT');
       } catch (err) {
-        if (err.code !== SERIALIZATION_FAILURE || attempt >= 5) throw err;
-        await new Promise((r) => setTimeout(r, 100 * 2 ** attempt));
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
       }
-    }
+    });
   }
 
   async applySyncOnce(itemId, { accounts, added, modified, removed, cursor }) {
@@ -356,6 +381,10 @@ class PgStore {
   }
 
   async replaceHoldings(itemId, rows) {
+    return retrying(() => this.replaceHoldingsOnce(itemId, rows));
+  }
+
+  async replaceHoldingsOnce(itemId, rows) {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -379,6 +408,10 @@ class PgStore {
   }
 
   async replaceCardStatements(itemId, rows) {
+    return retrying(() => this.replaceCardStatementsOnce(itemId, rows));
+  }
+
+  async replaceCardStatementsOnce(itemId, rows) {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -578,6 +611,16 @@ class FileStore {
       delete this.data.cardStatements?.[k]; delete this.data.cardSettings?.[k];
     }
     for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) { delete this.data.transactions[k]; delete this.data.overrides?.[k]; }
+    this.save();
+  }
+
+  async moveAccountData(from, to) {
+    const d = this.data;
+    if (d.nicknames?.[from] != null && d.nicknames[to] == null) d.nicknames[to] = d.nicknames[from];
+    if (d.cardSettings?.[from] && !d.cardSettings[to]) d.cardSettings[to] = d.cardSettings[from];
+    const taken = new Set((d.snapshots || []).filter((x) => x.account_id === to).map((x) => x.date));
+    for (const x of d.snapshots || []) if (x.account_id === from && !taken.has(x.date)) x.account_id = to;
+    for (const r of d.txRules || []) if (r.account_id === from) r.account_id = to;
     this.save();
   }
 

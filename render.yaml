@@ -27,6 +27,10 @@ services:
       # don't change it later or existing connections can't be decrypted.
       - key: ENCRYPTION_KEY
         generateValue: true
+      # Your time zone, so "today" (due dates, this month, snapshots) rolls over at
+      # local midnight like the browser, not at UTC midnight.
+      - key: TZ
+        value: America/Chicago
       - key: SYNC_INTERVAL_HOURS
         value: "6"
       # CockroachDB (or any Postgres) connection string, entered in the Render

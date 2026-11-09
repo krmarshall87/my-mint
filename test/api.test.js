@@ -331,4 +331,68 @@ for (const store of stores) {
       }
     });
   });
+
+  test(`[${store}] relinking, canceled activity, raw views, dates`, async (t) => {
+    await t.test('linking the same bank again replaces the old connection and keeps your changes', async () => {
+      const api = await startServer({}, { store });
+      try {
+        await linkBank(api);
+        assert.equal((await api.request('PATCH', '/api/accounts/chk', { nickname: 'Joint checking' })).status, 200);
+        assert.equal((await api.put('/api/cards/onep', { apr: 20.24 })).status, 200);
+        const refund = (await api.get('/api/transactions?limit=500')).body.transactions.find((x) => x.name === 'AMAZON REFUND');
+        assert.equal((await api.put(`/api/transactions/${refund.transaction_id}/category`, { category: 'Shopping' })).status, 200);
+
+        const r = await linkBank(api, 'Platypus Bank', 'relink');
+        assert.deepEqual(r.body.replaced, ['item-stub']);
+        const accounts = (await api.get('/api/accounts')).body;
+        assert.equal(accounts.filter((a) => a.mask === '0000').length, 1, 'no duplicate checking account');
+        assert.ok(accounts.every((a) => a.item_id === 'relink'));
+        assert.equal(accounts.find((a) => a.account_id === 'chk-2').display_name, 'Joint checking');
+        const card = (await api.get('/api/card-plan')).body.cards.find((c) => c.account_id === 'onep-2');
+        assert.equal(card.apr, 20.24);
+        assert.equal(card.apr_mine, true);
+        const moved = (await api.get('/api/transactions?limit=500')).body.transactions.find((x) => x.transaction_id === `${refund.transaction_id}-2`);
+        assert.equal(moved.category, 'Shopping');
+        assert.equal((await api.get('/api/items')).body.length, 1);
+      } finally {
+        await api.stop();
+      }
+    });
+
+    await t.test('investment activity Plaid stops returning is removed', async () => {
+      const api = await startServer({ STUB_INV_CANCEL: '1' }, { store });
+      try {
+        await linkBank(api);
+        const has = async () => (await api.get('/api/transactions?limit=500')).body.transactions.some((x) => x.name === 'DIVIDEND VTI');
+        assert.ok(await has(), 'dividend synced');
+        await api.post('/api/sync');
+        assert.ok(!(await has()), 'canceled dividend removed');
+      } finally {
+        await api.stop();
+      }
+    });
+
+    await t.test('raw Plaid views refuse requests started by another site', async () => {
+      const api = await startServer({}, { store });
+      try {
+        await linkBank(api);
+        assert.equal((await api.request('GET', '/api/plaid-raw/item-stub/accounts', undefined, { 'sec-fetch-site': 'cross-site' })).status, 403);
+        assert.equal((await api.request('GET', '/api/plaid-raw/item-stub/accounts', undefined, { 'sec-fetch-site': 'same-site' })).status, 403);
+        assert.equal((await api.request('GET', '/api/plaid-raw/item-stub/accounts', undefined, { 'sec-fetch-site': 'same-origin' })).status, 200);
+      } finally {
+        await api.stop();
+      }
+    });
+
+    await t.test('"today" is the date in the app’s time zone, not UTC', async () => {
+      // UTC+14: for 10 hours a day it's already tomorrow there.
+      const api = await startServer({ TZ: 'Pacific/Kiritimati' }, { store });
+      try {
+        const local = new Intl.DateTimeFormat('en-CA', { timeZone: 'Pacific/Kiritimati' }).format(new Date());
+        assert.equal((await api.get('/api/card-plan')).body.today, local);
+      } finally {
+        await api.stop();
+      }
+    });
+  });
 }

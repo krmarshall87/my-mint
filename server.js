@@ -228,8 +228,15 @@ async function syncItem(item) {
 
 // Sync every linked Item. Concurrent callers share one run so cursors never race.
 let syncInFlight = null;
+let syncQueue = Promise.resolve();
+// Runs fn after any sync in progress, so two syncs never move the same cursor.
+const exclusive = (fn) => {
+  const run = syncQueue.then(fn, fn);
+  syncQueue = run.catch(() => {});
+  return run;
+};
 function syncAll() {
-  syncInFlight ||= (async () => {
+  syncInFlight ||= exclusive(async () => {
     const results = [];
     for (const item of await items.list()) {
       if (isManualItem(item)) continue; // filled from CSV files, not Plaid
@@ -241,7 +248,7 @@ function syncAll() {
     }
     await recordSnapshots().catch((err) => console.error('snapshot failed', err.message));
     return results;
-  })().finally(() => { syncInFlight = null; });
+  }).finally(() => { syncInFlight = null; });
   return syncInFlight;
 }
 
@@ -294,6 +301,52 @@ app.post('/api/link-token', async (req, res) => {
   }
 });
 
+// Linking a bank that's already linked (instead of "reconnect") gives it a new
+// Item with new account ids. If every account of an older connection to the same
+// bank is in the new one (same last 4, type and subtype), it's the same login:
+// your nicknames, card details, balance history, rules and category changes
+// move to the new accounts and the old connection is removed. A second login
+// at the same bank (someone else's accounts) is left alone.
+const sameAccount = (a, b) => a.mask && a.mask === b.mask && a.type === b.type && (a.subtype || '') === (b.subtype || '');
+async function relinkedItems(item) {
+  if (!item.institution_id || isManualItem(item)) return [];
+  const others = (await items.list()).filter((i) => i.item_id !== item.item_id && i.institution_id === item.institution_id);
+  if (!others.length) return [];
+  const { data } = await plaid.accountsGet({ access_token: item.access_token });
+  const fresh = data.accounts.map((a) => ({ account_id: a.account_id, mask: a.mask, type: a.type, subtype: a.subtype }));
+  const accounts = await store.listAccounts();
+  const out = [];
+  for (const o of others) {
+    const mine = accounts.filter((a) => a.item_id === o.item_id);
+    const pairs = mine.map((a) => [a, fresh.filter((f) => sameAccount(a, f))]);
+    // Every old account has exactly one match, and no two share it.
+    if (!mine.length || pairs.some(([, m]) => m.length !== 1) || new Set(pairs.map(([, m]) => m[0].account_id)).size !== pairs.length) continue;
+    out.push({ item: o, map: new Map(pairs.map(([a, [f]]) => [a.account_id, f.account_id])) });
+  }
+  return out;
+}
+async function replaceRelinked(item, old) {
+  if (!old.length) return [];
+  const all = await rawTransactions();
+  const overrides = new Map((await store.listOverrides()).map((o) => [o.transaction_id, o.category]));
+  const done = [];
+  for (const { item: o, map } of old) {
+    for (const [from, to] of map) await store.moveAccountData(from, to);
+    // A category you set on a transaction follows it: same account, date, amount and text.
+    const fresh = all.filter((t) => t.item_id === item.item_id);
+    for (const t of all.filter((x) => x.item_id === o.item_id && overrides.has(x.transaction_id))) {
+      const to = map.get(t.account_id);
+      const match = fresh.find((n) => n.account_id === to && n.date === t.date && Math.abs(n.amount - t.amount) < 0.005 && n.name === t.name && !overrides.has(n.transaction_id));
+      if (match) { await store.setOverride(match.transaction_id, overrides.get(t.transaction_id)); overrides.set(match.transaction_id, true); }
+    }
+    try { await plaid.itemRemove({ access_token: o.access_token }); } catch (err) { console.error('remove old connection', plaidError(err)); }
+    await store.deleteItem(o.item_id);
+    done.push(o.item_id);
+  }
+  bumpData();
+  return done;
+}
+
 app.post('/api/exchange', async (req, res) => {
   try {
     const { public_token, institution } = req.body;
@@ -305,13 +358,18 @@ app.post('/api/exchange', async (req, res) => {
       institution_name: institution?.name || 'Bank',
     };
     await items.save(item);
-    let sync = null;
+    let sync = null, replaced = [];
     try {
-      sync = await syncItem(await items.get(item.item_id));
+      ({ sync, replaced } = await exclusive(async () => {
+        const fresh = await items.get(item.item_id);
+        const old = await relinkedItems(fresh);
+        const result = await syncItem(fresh);
+        return { sync: result, replaced: await replaceRelinked(fresh, old) };
+      }));
     } catch (err) {
       console.error('initial sync', plaidError(err));
     }
-    res.json({ item_id: item.item_id, sync });
+    res.json({ item_id: item.item_id, sync, replaced });
   } catch (err) {
     console.error('exchange', plaidError(err));
     res.status(500).json(plaidError(err));
@@ -339,6 +397,10 @@ const maskNumbers = (v, key = '') => {
   return v;
 };
 app.get('/api/plaid-raw/:item/:product', async (req, res) => {
+  // A GET, but it calls Plaid: another site could make the browser send it
+  // with your saved password (an <img>, say). Only this app's links, or typing it.
+  const site = req.get('sec-fetch-site');
+  if (site && site !== 'same-origin' && site !== 'none') return res.status(403).json({ error_message: 'Open this from My Mint' });
   const call = RAW_PRODUCTS[req.params.product];
   if (!call) return res.status(400).json({ error_message: `Product must be one of: ${Object.keys(RAW_PRODUCTS).join(', ')}` });
   const item = await items.get(req.params.item);
@@ -571,6 +633,10 @@ function ruleMatches(r, t) {
 let dataVersion = 0;
 const bumpData = () => { dataVersion += 1; };
 let snapshot = { version: -1, rows: [] };
+
+// Every stored transaction as Plaid sent it: no rules, overrides or categories.
+// Safe to use mid-sync, unlike the categorized snapshot.
+const rawTransactions = async () => (await store.listTransactions({ accountId: null, start: null, end: null, category: null, q: null, limit: 1e6, offset: 0 })).transactions;
 
 async function categorizedTransactions() {
   if (snapshot.version === dataVersion) return snapshot.rows;
@@ -820,7 +886,9 @@ app.post('/api/rules/import', async (req, res) => {
 // ------------------------------------------------------------- insights --
 const round2 = (n) => Math.round(n * 100) / 100;
 const merchantOf = (t) => t.display_name || t.merchant_name || t.name || 'Unknown';
-const isoDate = (d) => d.toISOString().slice(0, 10);
+// A calendar date in the app's time zone (TZ; set in render.yaml), as the
+// browser counts days. UTC would roll over to tomorrow in the evening.
+const isoDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const daysAgo = (n) => isoDate(new Date(Date.now() - n * 86400000));
 
 // Income is money in the Income categories (and dividends). Any other money in
@@ -1015,7 +1083,8 @@ async function syncInvestments(item, accounts, cursor) {
       };
     }));
     // Activity: two years the first time, then the last 90 days (it isn't incremental like /transactions/sync).
-    const have = (await categorizedTransactions()).some((t) => invIds.has(t.account_id) && t.plaid_category === 'INVESTMENT');
+    const existing = (await rawTransactions()).filter((t) => invIds.has(t.account_id) && t.category === 'INVESTMENT');
+    const have = existing.length > 0;
     const end = isoDate(new Date()), start = daysAgo(have ? 90 : 730);
     const txns = [];
     for (let offset = 0, total = Infinity; offset < total; ) {
@@ -1034,10 +1103,14 @@ async function syncInvestments(item, accounts, cursor) {
       if (!data.investment_transactions.length) break;
       offset += data.investment_transactions.length;
     }
-    if (txns.length) await store.applySync(item.item_id, { accounts: [], added: txns, modified: [], removed: [], cursor });
+    // /investments/transactions/get has no "removed" list: anything we have in
+    // the window that Plaid no longer returns was canceled.
+    const returned = new Set(txns.map((t) => t.transaction_id));
+    const removed = existing.filter((t) => t.date >= start && t.date <= end && !returned.has(t.transaction_id)).map((t) => ({ transaction_id: t.transaction_id }));
+    if (txns.length || removed.length) await store.applySync(item.item_id, { accounts: [], added: txns, modified: [], removed, cursor });
     await store.setItemProductStatus(item.item_id, 'investments', null);
     bumpData();
-    return { holdings: h.holdings.length, activity: txns.length };
+    return { holdings: h.holdings.length, activity: txns.length, removed: removed.length };
   } catch (err) {
     return productError(item, 'investments', err);
   }
@@ -1207,7 +1280,8 @@ const monthEnd = (m) => monthBounds(m).end;
 // Month-end assets, debts and net worth. Real snapshots win where they exist.
 // Before that, cash and card balances are worked out backwards from their
 // transactions; loans and investments can't be (interest and market moves
-// aren't transactions), so they're held at their earliest known balance.
+// aren't transactions), so they're held at the latest balance known by then
+// (the earliest one, before the first snapshot).
 // Either way those months are marked as estimates.
 app.get('/api/net-worth', async (_req, res) => {
   const [accounts, snapshots, rows] = await Promise.all([store.listAccounts(), store.listSnapshots(), categorizedTransactions()]);
@@ -1238,11 +1312,13 @@ app.get('/api/net-worth', async (_req, res) => {
       else if (reconstructable) {
         // Undo everything after month end. Plaid: positive amount = money out,
         // which lowers a cash balance and raises what you owe on a card.
-        const after = txns.filter((t) => t.date > end).reduce((s, t) => s + t.amount, 0);
+        // Pending ones aren't in the current balance yet, so there's nothing to undo.
+        const after = txns.filter((t) => t.date > end && !t.pending).reduce((s, t) => s + t.amount, 0);
         bal = debt ? a.current_balance - after : a.current_balance + after;
         estimated = true; // only as good as the transaction history behind it
       } else {
-        bal = (snaps[0] && snaps[0].balance) ?? a.current_balance;
+        // The latest snapshot before this month's end, or before any, the earliest one.
+        bal = (snap || snaps[0])?.balance ?? a.current_balance;
         estimated = true;
       }
       const row = out[i];
