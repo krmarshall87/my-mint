@@ -55,20 +55,29 @@ added.push(tx('chk', rel(-2), 'CHASE CREDIT CRD EPAY', 800, pfc('LOAN_PAYMENTS',
 // A transfer to savings at the same bank: not a card payment at all.
 added.push(tx('chk', rel(-2), 'ONLINE TRANSFER TO CHASE SAVINGS', 500, pfc('TRANSFER_OUT', 'TRANSFER_OUT_ACCOUNT_TRANSFER')));
 added.push(tx('citi', ymd(Y, M - 1, 29), 'AMAZON REFUND', -40, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_ONLINE_MARKETPLACES')));
+// Linking the same bank again (public token 'relink') gives a new Item whose
+// accounts and transactions have new ids, as Plaid does.
+const relinked = (r) => r?.access_token === 'access-relink';
+const ids = (r, list) => (relinked(r) ? list.map((x) => ({ ...x, account_id: `${x.account_id}-2`, ...(x.transaction_id ? { transaction_id: `${x.transaction_id}-2` } : {}) })) : list);
 Object.assign(PlaidApi.prototype, {
-  itemPublicTokenExchange: (r) => ok({ access_token: 'access-sandbox-stub', item_id: r.public_token === 'p' ? 'item-stub' : r.public_token }),
+  itemPublicTokenExchange: (r) => ok({ access_token: r.public_token === 'relink' ? 'access-relink' : 'access-sandbox-stub', item_id: r.public_token === 'p' ? 'item-stub' : r.public_token }),
   linkTokenCreate: (req) => {
     console.log('LINK', JSON.stringify({ c: req.additional_consented_products || null, u: req.update || null, p: req.products || null }));
     if ((req.additional_consented_products || []).includes('liabilities') && mode === 'noliab') return fail('INVALID_PRODUCT');
     return ok({ link_token: 'link-stub' });
   },
   itemRemove: () => ok({}),
-  transactionsSync: () => ok({ added, modified: [], removed: [], accounts: accounts.filter((a) => a.type !== 'investment'), has_more: false, next_cursor: 'cur1' }),
-  accountsGet: () => ok({ accounts }),
+  transactionsSync: (r) => ok({ added: ids(r, added), modified: [], removed: [], accounts: ids(r, accounts.filter((a) => a.type !== 'investment')), has_more: false, next_cursor: 'cur1' }),
+  accountsGet: (r) => ok({ accounts: ids(r, accounts) }),
   institutionsGetById: ({ institution_id }) => ok({ institution: { institution_id, name: 'Platypus Bank', products: (process.env.STUB_INST_PRODUCTS || 'transactions,liabilities,investments').split(','), oauth: false } }),
   itemGet: () => ok({ item: { consented_products: mode === 'consent' ? ['transactions', 'investments'] : ['transactions', 'investments', 'liabilities'], consent_expiration_time: process.env.STUB_EXPIRY_DAYS ? new Date(Date.now() + Number(process.env.STUB_EXPIRY_DAYS) * 864e5).toISOString() : null } }),
   investmentsHoldingsGet: () => ok({ securities: [], holdings: [] }),
-  investmentsTransactionsGet: () => ok({ securities: [], total_investment_transactions: 0, investment_transactions: [] }),
+  // STUB_INV_CANCEL=1: a dividend on the first fetch, canceled (no longer returned) after.
+  investmentsTransactionsGet: (r) => {
+    const list = process.env.STUB_INV_CANCEL !== '1' || globalThis.stubInvCanceled ? [] : [{ investment_transaction_id: 'div1', account_id: relinked(r) ? 'brk-2' : 'brk', date: rel(-10), name: 'DIVIDEND VTI', amount: -12.5, type: 'cash', subtype: 'dividend', security_id: null, iso_currency_code: 'USD' }];
+    if (process.env.STUB_INV_CANCEL === '1') globalThis.stubInvCanceled = true;
+    return ok({ securities: [], total_investment_transactions: list.length, investment_transactions: list });
+  },
   liabilitiesGet: () => mode === 'consent' ? fail('ADDITIONAL_CONSENT_REQUIRED') : mode === 'noliab' ? fail('INVALID_PRODUCT') : ok({ liabilities: { credit: [
     { account_id: 'citi', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 29.99, balance_subject_to_apr: 2500, interest_charge_amount: 61.2 }, { apr_type: 'balance_transfer_apr', apr_percentage: 0, balance_subject_to_apr: 1000 }, { apr_type: 'cash_apr', apr_percentage: 31.99 }], is_overdue: false,
       last_payment_amount: 500, last_payment_date: ymd(Y, M - 1, 28), last_statement_balance: 3500, last_statement_issue_date: ymd(Y, M - 1, 15), minimum_payment_amount: 105, next_payment_due_date: rel(5) },
