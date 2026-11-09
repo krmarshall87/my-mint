@@ -1368,6 +1368,23 @@ $('#csv-form').addEventListener('submit', async (e) => {
 
 
 
+// Links to what each bank actually sent Plaid, unprocessed (opens in a new tab).
+function rawLinks(node, status) {
+  node.replaceChildren();
+  const banks = status.filter((x) => x.item_id);
+  if (!banks.length) return;
+  node.append('What each bank sent, unprocessed: ');
+  banks.forEach((b, i) => {
+    if (i) node.append(' · ');
+    node.append(`${b.institution} (`);
+    for (const [j, product] of ['liabilities', 'accounts'].entries()) {
+      if (j) node.append(', ');
+      node.append(el('a', { href: `/api/plaid-raw/${encodeURIComponent(b.item_id)}/${product}`, target: '_blank', rel: 'noopener noreferrer' }, product === 'liabilities' ? 'statements' : 'balances & limits'));
+    }
+    node.append(')');
+  });
+}
+
 // Per-bank notes for an optional product; banks waiting for your OK share one note.
 function consentNotes(status, what, texts) {
   const waiting = status.filter((x) => x.status === 'ADDITIONAL_CONSENT_REQUIRED').map((x) => x.institution);
@@ -1419,6 +1436,7 @@ async function loadCards() {
 
     const status = $('#card-status');
     status.replaceChildren(...consentNotes(d.status, 'card statements', CARD_STATUS));
+    rawLinks($('#card-raw'), d.status);
 
     const warn = $('#card-warnings');
     warn.replaceChildren();
@@ -1672,6 +1690,7 @@ async function loadLoans() {
   await withLoading($('#view-loans'), async () => {
     const d = await api('/api/loans');
     $('#loan-status').replaceChildren(...consentNotes(d.status, 'loan details', LOAN_STATUS));
+    rawLinks($('#loan-raw'), d.status);
     const list = $('#loans-list');
     list.replaceChildren();
     if (!d.loans.length) list.appendChild(el('p', { class: 'panel muted empty-note' }, 'No loans linked yet. Mortgages and loans appear here once a bank shares them, or add one with + Add manual account (type Loan).'));

@@ -72,6 +72,21 @@ for (const store of stores) {
       assert.match(after.account, /^Joint Checking/);
     });
 
+    await t.test('the raw Plaid response is available, with account numbers masked', async () => {
+      const id = (await api.get('/api/items')).body[0].item_id;
+      const raw = (await api.get(`/api/plaid-raw/${id}/liabilities`)).body;
+      assert.equal(raw.product, 'liabilities');
+      assert.equal(raw.response.liabilities.credit.length, 3);
+      assert.equal(raw.response.liabilities.mortgage[0].account_number, '••4012');
+      assert.ok(!JSON.stringify(raw).includes('3120194012'));
+      assert.ok(!JSON.stringify(raw).includes('access-sandbox'), 'no access token');
+      const accounts = (await api.get(`/api/plaid-raw/${id}/accounts`)).body;
+      assert.equal(accounts.response.accounts.find((a) => a.account_id === 'disc').balances.limit, undefined, 'Discover sends no limit');
+      assert.equal((await api.get(`/api/plaid-raw/${id}/transactions`)).status, 400);
+      assert.equal((await api.get('/api/plaid-raw/nope/accounts')).status, 404);
+      assert.equal((await fetch(`${api.base}/api/plaid-raw/${id}/accounts`)).status, 401);
+    });
+
     await t.test('removing a bank removes its data', async () => {
       const id = (await api.get('/api/items')).body[0].item_id;
       await api.put('/api/cards/disc', { credit_limit: 3000 });
