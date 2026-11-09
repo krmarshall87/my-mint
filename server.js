@@ -322,6 +322,32 @@ app.post('/api/sync', async (_req, res) => {
   res.json({ results: await syncAll() });
 });
 
+// What Plaid actually returns for a bank, unprocessed, to check what a bank
+// does and doesn't send. Fetched live; account and routing numbers are masked.
+const RAW_PRODUCTS = {
+  accounts: (token) => plaid.accountsGet({ access_token: token }),
+  liabilities: (token) => plaid.liabilitiesGet({ access_token: token }),
+};
+const maskNumbers = (v, key = '') => {
+  if (Array.isArray(v)) return v.map((x) => maskNumbers(x, key));
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, maskNumbers(x, k)]));
+  if (/account_number|routing/i.test(key) && v != null) return `••${String(v).slice(-4)}`;
+  return v;
+};
+app.get('/api/plaid-raw/:item/:product', async (req, res) => {
+  const call = RAW_PRODUCTS[req.params.product];
+  if (!call) return res.status(400).json({ error_message: `Product must be one of: ${Object.keys(RAW_PRODUCTS).join(', ')}` });
+  const item = await items.get(req.params.item);
+  if (!item) return res.status(404).json({ error_message: 'Unknown bank' });
+  if (isManualItem(item)) return res.status(400).json({ error_message: 'Manual accounts have no Plaid data' });
+  try {
+    const { data } = await call(item.access_token);
+    res.json({ institution: item.institution_name, product: req.params.product, fetched_at: new Date().toISOString(), response: maskNumbers(data) });
+  } catch (err) {
+    res.status(502).json({ institution: item.institution_name, product: req.params.product, plaid_error: plaidError(err) });
+  }
+});
+
 app.get('/api/items', async (_req, res) => {
   res.json((await store.listItems()).map(({ access_token, cursor, ...rest }) => ({
     ...rest,
@@ -1715,7 +1741,7 @@ async function cardPlan({ buffer }) {
     invest_threshold: INVEST_THRESHOLD(),
     status: (await store.listItems())
       .filter((i) => accounts.some((a) => a.item_id === i.item_id && a.type === 'credit') && !accounts.some((a) => a.item_id === i.item_id && a.manual))
-      .map((i) => ({ institution: i.institution_name, status: statusOf(i, 'liabilities') })),
+      .map((i) => ({ item_id: i.item_id, institution: i.institution_name, status: statusOf(i, 'liabilities') })),
   };
 }
 
@@ -1815,7 +1841,7 @@ async function loanList() {
   });
   const status = itemList
     .filter((i) => accounts.some((a) => a.item_id === i.item_id && a.type === 'loan' && !a.manual))
-    .map((i) => ({ institution: i.institution_name, status: statusOf(i, 'liabilities') }));
+    .map((i) => ({ item_id: i.item_id, institution: i.institution_name, status: statusOf(i, 'liabilities') }));
   return { today, loans, status };
 }
 

@@ -57,6 +57,7 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 - Sync with `/transactions/sync`, keeping one cursor per Item. Apply each batch (added, modified, removed, cursor) in a single transaction so a partial failure never moves the cursor forward. If you get `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION`, restart from the original cursor.
 - An empty `next_cursor` with no transactions added means Plaid is still preparing the history. Report it as `pending_initial_pull`; it is not an error.
 - Access tokens are encrypted at rest (`enc:v1:` prefix, AES-256-GCM, using `ENCRYPTION_KEY`). Always go through the `items.*` helpers in `server.js`, not `store.*Item` directly. Never log an access token or return one from an API. **`ENCRYPTION_KEY` must never change**, or every saved connection becomes unreadable.
+- **Raw responses:** `GET /api/plaid-raw/:item/:product` (`accounts` | `liabilities`) calls Plaid live and returns its response unprocessed, so the owner can check what a bank actually sends (the Credit Cards and Loans tabs link to it). Account and routing numbers are masked (`maskNumbers`), and access tokens never appear. Only add read-only products to `RAW_PRODUCTS`.
 - Sandbox and production Items don't mix. Tokens are tied to one environment.
 
 ## Architecture rules
