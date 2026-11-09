@@ -1601,9 +1601,13 @@ function renderPlanTable(d) {
     plan.appendChild(steps);
 
     const interest = el('td', { class: 'num interest-cell' });
-    if (c.interest_cost) interest.append(`~${money(c.interest_cost)}`);
-    else interest.append(c.remaining > 0 ? '$0' : '—');
-    if (c.interest_if_unpaid > c.interest_cost) interest.append(el('div', { class: 'sub muted' }, `saves ~${money(c.interest_if_unpaid - c.interest_cost)}`));
+    // What a month of interest would cost if this statement went unpaid, then what the plan leaves.
+    if (c.interest_if_unpaid > 0) {
+      interest.append(el('div', { class: 'neg' }, `~${money(c.interest_if_unpaid)} if not paid`));
+      interest.append(el('div', { class: 'sub muted' }, c.interest_cost ? `~${money(c.interest_cost)} with this plan` : '$0 with this plan'));
+    } else {
+      interest.append(c.interest_cost ? `~${money(c.interest_cost)}` : c.remaining > 0 ? '$0' : '—');
+    }
     if (c.interest_charged != null) interest.append(el('div', { class: 'sub muted' }, `${money(c.interest_charged)} on last statement`));
     if (c.interest_ytd) interest.append(el('div', { class: 'sub muted' }, `${money(c.interest_ytd)} this year`));
 

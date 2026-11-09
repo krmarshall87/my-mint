@@ -37,6 +37,10 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
     assert.doesNotMatch(text, /\[object [A-Za-z]+\]/, `${view} shows an [object …]`);
     assert.doesNotMatch(text, /\bundefined\b|\bNaN\b/, `${view} shows undefined or NaN`);
   }
+  // Interest shows what skipping the bill would cost, next to what the plan leaves.
+  await page.goto(`${api.base}/#cards`);
+  await page.waitForTimeout(800);
+  assert.match(await page.locator('#card-plan-table').innerText(), /~\$[\d,.]+ if not paid[\s\S]*with this plan/);
   // The car loan has no rate yet: its note must read as text.
   await page.goto(`${api.base}/#loans`);
   await page.waitForTimeout(800);
