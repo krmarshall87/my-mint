@@ -70,7 +70,7 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 
 ## Security
 
-- **Every route except `/healthz` and the three icon files (`favicon.ico`, `favicon.svg`, `apple-touch-icon.png`) requires auth, reads included.** This is private financial data, so nothing is public.
+- **Every route except `/healthz` and the icon files (`PUBLIC_ICONS` in `server.js`: favicons, `apple-touch-icon(-precomposed).png`, `icon-192/512.png`, `manifest.webmanifest`) requires auth, reads included.** Home screens fetch icons without the password, and they hold no data. This is private financial data, so nothing is public.
 - **Writes must be same-origin.** Basic Auth credentials go with every request to the site, so `POST`/`PUT`/`PATCH`/`DELETE` are refused (403) when `Sec-Fetch-Site` is cross-site or `Origin` doesn't match the host. Requests with neither header (curl, scripts) still work with the password.
 - JSON bodies are parsed only after the password check. `x-powered-by` is off. Expired lockout records are pruned every 15 minutes.
 - Keep the CSP strict. Plaid Link needs `script-src` and `frame-src https://cdn.plaid.com` and inline styles. Load nothing else from third parties.
