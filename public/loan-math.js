@@ -38,7 +38,50 @@
     return { rows, interest: r2(interestTotal), months: rows.length, payoff: rows.length ? rows[rows.length - 1].month : start, never: bal > 0.005, payment: pay };
   }
 
-  const api = { amortize, ymAdd, isYm, r2 };
+  const monthsBetween = (a, b) => {
+    const [y1, m1] = a.split('-').map(Number), [y2, m2] = b.split('-').map(Number);
+    return (y2 - y1) * 12 + (m2 - m1);
+  };
+  const payment = (balance, rate, months) => {
+    const r = rate / 1200;
+    return r ? (balance * r) / (1 - (1 + r) ** -months) : balance / months;
+  };
+  // "30 year", "360 month", "15 years" → months.
+  const termMonths = (term) => {
+    const m = /(\d+(?:\.\d+)?)\s*(year|yr|month|mo)/i.exec(term || '');
+    if (!m) return null;
+    return Math.round(Number(m[1]) * (/^y/i.test(m[2]) ? 12 : 1));
+  };
+
+  // Where the loan stands against its original schedule: which payment is
+  // next ("88 of 360") and how far ahead or behind the balance is. Needs the
+  // original amount, the rate, and the term or both the start and payoff dates.
+  function loanProgress({ originalPrincipal, rate, term, origination, maturity, nextDue, balance }) {
+    if (!(originalPrincipal > 0) || rate == null || !nextDue) return null;
+    let n = termMonths(term);
+    // Without a term: the first payment usually comes the second month after closing.
+    if (!n && origination && maturity) n = monthsBetween(origination.slice(0, 7), maturity.slice(0, 7)) - 1;
+    if (!n) return null;
+    // First payment: n−1 months before the last one (or the month after the loan started).
+    const first = maturity ? ymAdd(maturity.slice(0, 7), -(n - 1)) : origination ? ymAdd(origination.slice(0, 7), 1) : null;
+    if (!first) return null;
+    const paymentNumber = monthsBetween(first, nextDue.slice(0, 7)) + 1;
+    if (paymentNumber < 1 || paymentNumber > n + 1) return null;
+    const original = amortize({ balance: originalPrincipal, rate, payment: Math.round(payment(originalPrincipal, rate, n) * 100) / 100, start: first });
+    const made = paymentNumber - 1;
+    const scheduledBalance = made ? original.rows[Math.min(made, original.rows.length) - 1].balance : originalPrincipal;
+    // How many payments the original schedule needed to get down to today's balance.
+    const reached = original.rows.findIndex((row) => row.balance <= balance + 0.5);
+    const equivalent = reached < 0 ? 0 : reached + 1;
+    return {
+      paymentNumber, totalPayments: n, firstPayment: first,
+      originalPayment: original.rows[0]?.payment ?? null,
+      scheduledBalance: r2(scheduledBalance), difference: r2(scheduledBalance - balance),
+      monthsAhead: equivalent - made,
+    };
+  }
+
+  const api = { amortize, loanProgress, termMonths, ymAdd, isYm, r2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else Object.assign(root, api);
 })(typeof window !== 'undefined' ? window : globalThis);

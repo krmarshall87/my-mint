@@ -2,7 +2,7 @@
 // ($149,004.97 at 3.99%, $793.46 principal & interest, from Feb 2025).
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { amortize, ymAdd } = require('../public/loan-math.js');
+const { amortize, ymAdd, loanProgress, termMonths } = require('../public/loan-math.js');
 
 const loan = { balance: 149004.97, rate: 3.99, payment: 793.46, start: '2025-02' };
 const near = (actual, expected, tol, msg) => assert.ok(Math.abs(actual - expected) <= tol, `${msg}: ${actual} vs ${expected}`);
@@ -70,4 +70,37 @@ test('ymAdd crosses year boundaries', () => {
   assert.equal(ymAdd('2025-12', 1), '2026-01');
   assert.equal(ymAdd('2025-01', -1), '2024-12');
   assert.equal(ymAdd('2025-02', 24), '2027-02');
+});
+
+// The owner's mortgage as U.S. Bank reports it: $166,400 at 3.99% from July 2019,
+// 30 years, payoff Aug 2049. The spreadsheet's 12/01/2026 row starts at
+// $142,214.51, the balance the bank reports now, so it's right on schedule.
+const mortgage = { originalPrincipal: 166400, rate: 3.99, term: '30 year', origination: '2019-07-08', maturity: '2049-08-01', nextDue: '2026-12-01', balance: 142214.51 };
+
+test('payment number and progress against the original schedule', () => {
+  const p = loanProgress(mortgage);
+  assert.equal(p.totalPayments, 360);
+  assert.equal(p.firstPayment, '2019-09');
+  assert.equal(p.paymentNumber, 88);
+  assert.equal(p.originalPayment, 793.46);
+  near(p.scheduledBalance, 142214.51, 1, 'scheduled balance');
+  assert.equal(p.monthsAhead, 0);
+});
+
+test('a lower balance than scheduled shows months ahead', () => {
+  const p = loanProgress({ ...mortgage, balance: 138000 });
+  // $4,214 under schedule ≈ 13 months of ~$320 principal.
+  assert.equal(p.monthsAhead, 13);
+  assert.ok(p.difference > 4000);
+  assert.ok(loanProgress({ ...mortgage, balance: 145000 }).monthsAhead < 0, 'behind');
+});
+
+test('term is parsed, or worked out from the dates', () => {
+  assert.equal(termMonths('30 year'), 360);
+  assert.equal(termMonths('15 years'), 180);
+  assert.equal(termMonths('72 month'), 72);
+  assert.equal(termMonths(null), null);
+  assert.equal(loanProgress({ ...mortgage, term: null }).totalPayments, 360);
+  assert.equal(loanProgress({ ...mortgage, term: null }).paymentNumber, 88);
+  assert.equal(loanProgress({ ...mortgage, originalPrincipal: null }), null);
 });
