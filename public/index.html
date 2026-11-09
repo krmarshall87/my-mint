@@ -480,6 +480,18 @@
         </div>
         <span class="hint">While a promo lasts, the plan pays only the minimum on this card and puts extra money on cards that charge interest. Within 45 days of the end, it’s paid off first.</span>
       </fieldset>
+      <details class="field-group cycle" id="card-cycle">
+        <summary>Statement cycle (when your bank doesn’t share statements)</summary>
+        <div class="field-row">
+          <label class="field">Statement closes on day <input name="closing_day" type="number" min="1" max="31" step="1" inputmode="numeric" placeholder="e.g. 3" autocomplete="off" /></label>
+          <label class="field">Payment due on day <input name="due_day" type="number" min="1" max="31" step="1" inputmode="numeric" placeholder="e.g. 28" autocomplete="off" /></label>
+        </div>
+        <div class="field-row">
+          <label class="field">Minimum: at least $ <input name="min_floor" type="number" min="0" step="1" inputmode="decimal" placeholder="e.g. 35" autocomplete="off" /></label>
+          <label class="field">or % of the balance <input name="min_pct" type="number" min="0" max="100" step="0.01" inputmode="decimal" placeholder="e.g. 1" autocomplete="off" /></label>
+        </div>
+        <span class="hint">Each month the app works out the statement balance on the closing day (today’s balance minus everything posted since), the due date, and the minimum (the greater of the two). It’s in your cardholder agreement or on any statement. Leave the minimum blank to have it estimated.</span>
+      </details>
       <fieldset class="field-group">
         <legend>Latest statement</legend>
         <div class="field-row">

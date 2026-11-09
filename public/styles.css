@@ -487,3 +487,7 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .note-box.ask p { margin: 0; flex: 1 1 280px; }
 .link-btn.attention { font-weight: 600; color: var(--warn); white-space: nowrap; }
 .link-btn.attention::before { content: "⚠ "; }
+.dialog details.cycle { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.dialog details.cycle > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text); }
+.dialog details.cycle[open] > summary { margin-bottom: 8px; }
+.tx-table td.desc .sub.transit { color: var(--link); }

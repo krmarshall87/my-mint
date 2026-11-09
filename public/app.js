@@ -177,7 +177,7 @@ function markNeeded(form, names) {
   (inputs[0] || form.querySelector('input'))?.focus();
 }
 const LOAN_FIELDS_FOR = { 'interest rate': ['rate'], 'monthly payment': ['payment'] };
-const CARD_FIELDS_FOR = { statement: ['statement_balance', 'statement_date', 'due_date', 'minimum_payment'], APR: ['apr'], 'credit limit': ['credit_limit'] };
+const CARD_FIELDS_FOR = { statement: ['closing_day', 'due_day'], APR: ['apr'], 'credit limit': ['credit_limit'] };
 
 const expiringSoon = (i) => i.expires_in_days != null && i.expires_in_days <= 30;
 const ERROR_TEXT = {
@@ -1495,9 +1495,12 @@ function renderPlanTable(d) {
     const name = el('td', { class: 'desc' });
     name.append(el('strong', {}, c.name));
     const sub = c.statement_date
-      ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since` : ''}${c.source === 'you' ? ' (yours)' : ''}`
+      ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since${c.in_transit?.length ? ' (incl. on the way)' : ''}` : ''}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : ''}`
       : `Balance ${money(c.balance || 0)} · no statement yet`;
     name.append(el('div', { class: 'sub' }, sub));
+    for (const p of c.in_transit || []) {
+      name.append(el('div', { class: 'sub transit' }, `On the way: ${money(p.amount)} sent ${shortDate(p.date)}${p.pending ? ' (pending)' : ''}, not on the card yet`));
+    }
     if (c.credit_limit) {
       const u = el('div', { class: 'sub' }, `${Math.round(c.utilization)}% of ${wholeMoney(c.credit_limit)} limit`);
       u.append(utilBadge(c.utilization));
@@ -1512,10 +1515,14 @@ function renderPlanTable(d) {
     const apr = el('td', { class: 'num' });
     apr.append(aprText(c));
     if (c.apr_assumed) apr.append(el('span', { class: 'badge', title: 'Your bank didn’t report the APR. Click Edit to add it.' }, 'assumed'));
+    // The bank's balance per rate, when there's more than one.
+    if ((c.rate_buckets || []).length > 1) {
+      for (const b of c.rate_buckets) apr.append(el('div', { class: 'sub muted' }, `${b.apr}% on ${wholeMoney(b.balance)}`));
+    }
     if (c.promo_ending) apr.append(el('div', { class: 'sub muted' }, `promo ends ${shortDate(c.promo_ending)}`));
     else if (c.promo?.end) apr.append(el('div', { class: 'sub muted' }, `until ${shortDate(c.promo.end)}`));
     const due = el('td', {}, c.due_date ? shortDate(c.due_date) : '—');
-    if (c.overdue) due.append(el('span', { class: 'badge' }, 'past due'));
+    if (c.overdue || c.bank_overdue) due.append(el('span', { class: 'badge util-high', title: c.bank_overdue ? 'Your bank reports this card as past due' : '' }, 'past due'));
 
     const plan = el('td');
     const steps = el('ul', { class: 'plan-steps' });
@@ -1643,6 +1650,9 @@ function openCardDialog(c, { highlight = false } = {}) {
   const set = (k, v, ph) => { cardForm[k].value = v ?? ''; cardForm[k].placeholder = ph ?? ''; };
   set('apr', mine.apr, c.apr_assumed ? 'not reported' : String(c.regular_apr ?? c.apr));
   set('credit_limit', mine.credit_limit, c.credit_limit_source === 'bank' ? String(c.credit_limit) : 'not reported');
+  for (const k of ['closing_day', 'due_day', 'min_floor', 'min_pct']) set(k, mine[k], '');
+  // The cycle is only needed when the bank doesn't share statements.
+  $('#card-cycle').open = c.source !== 'plaid';
   set('promo_apr', mine.promo_apr, '');
   set('promo_end', mine.promo_end);
   set('statement_balance', c.source === 'you' ? c.statement_balance : mine.statement_balance, fromBank ? String(c.statement_balance) : '');
@@ -1655,7 +1665,7 @@ function openCardDialog(c, { highlight = false } = {}) {
 cardForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = {};
-  for (const k of ['credit_limit', 'apr', 'promo_apr', 'promo_end', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
+  for (const k of ['credit_limit', 'apr', 'promo_apr', 'promo_end', 'closing_day', 'due_day', 'min_floor', 'min_pct', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
   try {
     await api(`/api/cards/${encodeURIComponent(editingCard.account_id)}`, { method: 'PUT', body });
     $('#card-dialog').close();
