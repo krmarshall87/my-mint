@@ -1556,26 +1556,39 @@ async function cardPlan({ buffer }) {
   const cash = round2(checking.reduce((s, a) => s + (a.available_balance ?? a.current_balance ?? 0), 0));
 
   // Cards and what's still owed on each statement.
-  // Card payments that left checking but haven't posted to the card yet, matched
-  // to a card by name (bank, card name, last 4, or Plaid's counterparty).
+  // Card payments that left checking but haven't posted to the card yet. Only
+  // real card payments (not other transfers out of checking), matched to a card
+  // by words from its bank or card name, its last 4, or Plaid's counterparty.
+  // Whether one counts is decided per card below, from the amount or last 4.
   const credit = accounts.filter((a) => a.type === 'credit');
-  const GENERIC = new Set(['bank', 'card', 'credit', 'cards', 'of', 'the', 'na', 'n.a.', 'payment', 'pmt', 'online', 'and', 'cash', 'rewards', 'visa', 'mastercard', 'account', 'us', 'usa']);
+  const creditIds = new Set(credit.map((a) => a.account_id));
+  const GENERIC = new Set(['bank', 'card', 'credit', 'cards', 'of', 'the', 'na', 'n.a.', 'payment', 'pmt', 'online', 'and', 'cash', 'rewards', 'visa', 'mastercard', 'account', 'us', 'usa', 'autopay', 'epay']);
   const tokens = (text) => String(text || '').toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !GENERIC.has(w));
   const cardTokens = new Map(credit.map((a) => [a.account_id, new Set([...tokens(a.institution_name), ...tokens(a.display_name), ...tokens(a.official_name)])]));
-  const cardInflows = txns.filter((t) => credit.some((a) => a.account_id === t.account_id) && t.amount < 0);
-  const inTransit = new Map(); // card account_id -> [{ date, amount, name }]
+  const isRealCardPayment = (t) => t.category === 'Credit Card Payment' || t.category_detailed === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT';
+  const inflowsByCard = new Map();
   for (const t of txns) {
-    if (!checkingIds.has(t.account_id) || t.amount <= 0 || !isCardPayment(t) || t.date < daysAgo(10)) continue;
-    // Already posted on some card (same amount within 10 days)? Then it isn't in transit.
-    if (cardInflows.some((c) => Math.abs(c.amount + t.amount) < 0.01 && dayNum(c.date) >= dayNum(t.date) - 2 && dayNum(c.date) - dayNum(t.date) <= 10)) continue;
+    if (!creditIds.has(t.account_id) || t.amount >= 0) continue;
+    const l = inflowsByCard.get(t.account_id) || [];
+    l.push(t);
+    inflowsByCard.set(t.account_id, l);
+  }
+  const transitCutoff = daysAgo(10);
+  const inTransit = new Map(); // card account_id -> [{ date, amount, name, pending, mask_match }]
+  for (const t of txns) {
+    if (!checkingIds.has(t.account_id) || t.amount <= 0 || t.date < transitCutoff || !isRealCardPayment(t)) continue;
     const words = new Set(tokens(`${t.name} ${t.merchant_name || ''} ${t.counterparty || ''}`));
-    const scored = credit.map((a) => ({
-      a, score: [...cardTokens.get(a.account_id)].filter((w) => words.has(w)).length + (a.mask && `${t.name}`.includes(a.mask) ? 3 : 0),
-    })).filter((x) => x.score > 0).sort((x, y) => y.score - x.score);
+    const scored = credit.map((a) => {
+      const maskMatch = !!(a.mask && `${t.name} ${t.merchant_name || ''}`.includes(a.mask));
+      return { a, maskMatch, score: [...cardTokens.get(a.account_id)].filter((w) => words.has(w)).length + (maskMatch ? 3 : 0) };
+    }).filter((x) => x.score > 0).sort((x, y) => y.score - x.score);
     if (!scored.length || (scored[1] && scored[1].score === scored[0].score)) continue; // no match, or can't tell which card
-    const l = inTransit.get(scored[0].a.account_id) || [];
-    l.push({ date: t.date, amount: round2(t.amount), name: t.display_name || t.name, pending: t.pending });
-    inTransit.set(scored[0].a.account_id, l);
+    const { a: card, maskMatch } = scored[0];
+    // Already posted on that card (same amount, from 2 days before to 10 after)? Then it isn't in transit.
+    if ((inflowsByCard.get(card.account_id) || []).some((c) => Math.abs(c.amount + t.amount) < 0.01 && dayNum(c.date) >= dayNum(t.date) - 2 && dayNum(c.date) - dayNum(t.date) <= 10)) continue;
+    const l = inTransit.get(card.account_id) || [];
+    l.push({ date: t.date, amount: round2(t.amount), name: t.display_name || t.name, pending: t.pending, mask_match: maskMatch });
+    inTransit.set(card.account_id, l);
   }
 
   const cards = accounts.filter((a) => a.type === 'credit').map((a) => {
@@ -1585,7 +1598,14 @@ async function cardPlan({ buffer }) {
       : 0;
     // A payment Plaid knows about that isn't in the card's transactions yet.
     const posted = paidTx || (d.last_payment_date && d.statement_date && d.last_payment_date > d.statement_date ? d.last_payment_amount || 0 : 0);
-    const transit = (inTransit.get(a.account_id) || []).filter((p) => !d.statement_date || p.date > d.statement_date);
+    // A payment on the way counts only with clear evidence it's for this card:
+    // its last 4 in the description, or an amount this card asked for (statement
+    // balance, minimum, what's left, or its usual payment). Others are shown, not
+    // counted, since it may be for another card at the same bank that isn't linked.
+    const wanted = [d.statement_balance, d.minimum_payment, d.statement_balance != null ? d.statement_balance - posted : null, d.last_payment_amount].filter((x) => x > 0);
+    const candidates = (inTransit.get(a.account_id) || []).filter((p) => !d.statement_date || p.date > d.statement_date);
+    const transit = candidates.filter((p) => p.mask_match || wanted.some((w) => Math.abs(w - p.amount) <= 1));
+    const possibleTransit = candidates.filter((p) => !transit.includes(p));
     const paid = round2(posted + transit.reduce((s, p) => s + p.amount, 0));
     const remaining = d.statement_balance == null ? null : round2(Math.max(0, d.statement_balance - paid));
     const minimum = remaining == null ? null : round2(Math.min(remaining, Math.max(0, (d.minimum_payment ?? Math.max(35, remaining * 0.02)) - paid)));
@@ -1615,10 +1635,13 @@ async function cardPlan({ buffer }) {
       balance: a.current_balance, ...d, paid_since_statement: paid, remaining,
       minimum, minimum_estimated: d.minimum_payment == null && remaining != null,
       apr: aprAssumed ? DEFAULT_APR() : topApr != null && !(d.promo && !d.promo.from_plaid) && us.get(a.account_id)?.apr == null ? topApr : d.apr, apr_assumed: aprAssumed,
+      apr_mine: us.get(a.account_id)?.apr != null,
       rate_buckets: userRate ? [] : buckets.map((x) => ({ type: x.type, apr: x.apr, balance: x.balance })),
       promo_balance: promoBalance,
       in_transit: transit,
-      bank_overdue: !!st.get(a.account_id)?.is_overdue,
+      possible_transit: possibleTransit,
+      // The bank says past due, unless the minimum has since been paid (or is on the way).
+      bank_overdue: !!st.get(a.account_id)?.is_overdue && minimum > 0.01,
       overdue: remaining > 0 && d.due_date != null && d.due_date < today,
       needs_details: d.statement_balance == null || d.due_date == null,
       // What you could add (Edit) to make the plan exact.
@@ -1717,7 +1740,24 @@ async function cardPlan({ buffer }) {
   for (const c of [...planned].sort((x, y) => x.due_date.localeCompare(y.due_date))) c.pay = round2(c.pay + pay(c, c.remaining - c.pay - c.pay_late, 'statement'));
 
   // When the money for each payment is there: today, or after a paycheck.
+  // Soonest due first, and each card's move to an earlier day is kept, so two
+  // cards never both count on the same dollars being there now.
   const incomeDays = events.filter((e) => e.type === 'income');
+  const early = bal.slice();
+  for (const c of [...planned].sort((x, y) => x.due_date.localeCompare(y.due_date))) {
+    const mine = payments.filter((p) => p.account_id === c.account_id && p.kind !== 'extra');
+    if (!mine.length) continue;
+    const t = Math.max(...mine.map((p) => p.day));
+    const amt = round2(mine.reduce((s, p) => s + p.amount, 0));
+    // Earliest day it could go out instead: moving it earlier takes it out of
+    // those days' balances too, and none may dip below the buffer.
+    let from = t;
+    while (from > 0 && early[from - 1] - amt >= buffer - 0.005) from--;
+    for (let i = from; i < t; i++) early[i] -= amt;
+    c.pay_from = fromDayNum(dayNum(today) + from);
+    const paycheck = [...incomeDays].reverse().find((e) => idx(e.date) <= from && idx(e.date) > 0);
+    c.funded_by = from === 0 || !paycheck ? 'checking' : { name: paycheck.name, date: paycheck.date };
+  }
   for (const c of cards) {
     c.pay ??= 0;
     c.pay_late ??= 0;
@@ -1749,17 +1789,6 @@ async function cardPlan({ buffer }) {
       m[k].amount = round2(m[k].amount + p.amount);
       return m;
     }, {})).sort((x, y) => x.date.localeCompare(y.date));
-    const mine = payments.filter((p) => p.account_id === c.account_id && p.kind !== 'extra');
-    if (mine.length) {
-      const t = Math.max(...mine.map((p) => p.day));
-      // Earliest day it could go out instead: moving it earlier takes it out of
-      // those days' balances too, and none may dip below the buffer.
-      let from = t;
-      while (from > 0 && bal[from - 1] - c.pay >= buffer - 0.005) from--;
-      c.pay_from = fromDayNum(dayNum(today) + from);
-      const paycheck = [...incomeDays].reverse().find((e) => idx(e.date) <= from && idx(e.date) > 0);
-      c.funded_by = from === 0 || !paycheck ? 'checking' : { name: paycheck.name, date: paycheck.date };
-    }
   }
 
   const totalDue = round2(planned.reduce((s, c) => s + c.remaining, 0));
@@ -1821,6 +1850,14 @@ async function cardPlan({ buffer }) {
     totals: {
       income: round2(events.filter((e) => e.type === 'income').reduce((s, e) => s + e.amount, 0)),
       bills: round2(-events.filter((e) => e.type === 'bill').reduce((s, e) => s + e.amount, 0)),
+      // The same, only up to the last due date planned for (what the summary shows).
+      income_plan: round2(events.filter((e) => e.type === 'income' && e.date <= end).reduce((s, e) => s + e.amount, 0)),
+      bills_plan: round2(-events.filter((e) => e.type === 'bill' && e.date <= end).reduce((s, e) => s + e.amount, 0)),
+      // Card payments the money's in checking for today, and those waiting on a paycheck.
+      pay_now: round2(cards.filter((c) => c.funded_by === 'checking').reduce((s, c) => s + c.pay, 0)),
+      pay_after_paycheck: round2(cards.filter((c) => c.funded_by && c.funded_by !== 'checking').reduce((s, c) => s + c.pay, 0)),
+      cards_paid: planned.filter((c) => c.pay >= c.remaining - 0.005).length,
+      last_due: planned.length ? lastDue : null,
       due: totalDue, pay: totalPay, pay_late: totalLate, unpaid, minimum_short: minShort,
       interest, card_debt: cardDebt,
       credit_limit: totalLimit, utilization, cards_without_limit: cards.length - limited.length,
@@ -1878,15 +1915,10 @@ app.put('/api/cards/:id', async (req, res) => {
 // or personal loans), your own details for anything it leaves out, and the
 // payments seen arriving on the loan account. The browser builds the
 // amortization schedule and the what-ifs from this.
-const monthsBetween = (from, to) => {
-  const [y1, m1] = from.split('-').map(Number), [y2, m2] = to.split('-').map(Number);
-  return (y2 - y1) * 12 + (m2 - m1);
-};
-const pmt = (balance, ratePct, months) => {
-  if (!(balance > 0) || !(months > 0)) return null;
-  const r = ratePct / 1200;
-  return r ? (balance * r) / (1 - (1 + r) ** -months) : balance / months;
-};
+// The same loan math the browser uses (public/loan-math.js), so they can't drift.
+const loanMath = require('./public/loan-math.js');
+const monthsBetween = (from, to) => loanMath.monthsBetween(from.slice(0, 7), to.slice(0, 7));
+const pmt = (balance, ratePct, months) => (balance > 0 && months > 0 ? loanMath.payment(balance, ratePct, months) : null);
 
 const kindOf = (a, p) => p.kind || (/mortgage|home/i.test(`${a.subtype} ${a.name}`) ? 'mortgage' : a.subtype || 'loan');
 

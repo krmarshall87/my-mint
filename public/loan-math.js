@@ -62,8 +62,9 @@
     // Without a term: the first payment usually comes the second month after closing.
     if (!n && origination && maturity) n = monthsBetween(origination.slice(0, 7), maturity.slice(0, 7)) - 1;
     if (!n) return null;
-    // First payment: n−1 months before the last one (or the month after the loan started).
-    const first = maturity ? ymAdd(maturity.slice(0, 7), -(n - 1)) : origination ? ymAdd(origination.slice(0, 7), 1) : null;
+    // First payment: n−1 months before the last one, or (without a payoff date)
+    // the second month after closing, the same assumption as above.
+    const first = maturity ? ymAdd(maturity.slice(0, 7), -(n - 1)) : origination ? ymAdd(origination.slice(0, 7), 2) : null;
     if (!first) return null;
     const paymentNumber = monthsBetween(first, nextDue.slice(0, 7)) + 1;
     if (paymentNumber < 1 || paymentNumber > n + 1) return null;
@@ -81,7 +82,7 @@
     };
   }
 
-  const api = { amortize, loanProgress, termMonths, ymAdd, isYm, r2 };
+  const api = { amortize, loanProgress, termMonths, monthsBetween, payment, ymAdd, isYm, r2 };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else Object.assign(root, api);
 })(typeof window !== 'undefined' ? window : globalThis);

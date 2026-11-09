@@ -1405,8 +1405,8 @@ function consentNotes(status, what, texts) {
 
 // ----------------------------------------------------------- Credit cards --
 const CARD_STATUS = {
-  PRODUCTS_NOT_SUPPORTED: 'doesn’t share card statements through Plaid. Click Edit on its cards to add them yourself.',
-  INVALID_PRODUCT: 'can’t share card statements yet: turn on the Liabilities product in your Plaid dashboard, or click Edit to add them yourself.',
+  PRODUCTS_NOT_SUPPORTED: 'doesn’t share card statements through Plaid. Add them yourself with ✎ next to each card.',
+  INVALID_PRODUCT: 'can’t share card statements yet: turn on the Liabilities product in your Plaid dashboard, or add them yourself with ✎ next to each card.',
   PRODUCT_NOT_READY: 'is still preparing card statements. They’ll appear after the next update.',
   NO_LIABILITY_ACCOUNTS: 'didn’t report any card statements.',
 };
@@ -1422,7 +1422,7 @@ const noteBox = (level, ...parts) => {
 const strong = (t) => el('strong', {}, t);
 // Credit utilization: under 10% is great, over 30% starts to hurt a credit score. Always with a label.
 function utilBadge(pct) {
-  const [cls, label] = pct > 30 ? ['util-high', 'over 30%'] : pct <= 10 ? ['util-good', 'low'] : ['util-ok', 'OK'];
+  const [cls, label] = pct > 30 ? ['util-high', 'over 30%'] : ['util-good', pct <= 10 ? 'low' : 'OK'];
   return el('span', { class: `badge ${cls}` }, label);
 }
 const aprText = (c) => (c.promo ? `${c.promo.apr}% promo` : `${Number(c.apr).toFixed(2)}%`);
@@ -1435,8 +1435,25 @@ async function loadCards() {
     const t = d.totals;
     $('#card-window').textContent = `Planning through ${shortDate(d.end)}; bills and paychecks are looked at through ${shortDate(d.through)} so next month’s bills stay covered.`;
 
+    const missing = d.cards.filter((c) => c.needs_details && c.balance > 0);
+    const unsupported = new Set(d.status.filter((x) => x.status === 'PRODUCTS_NOT_SUPPORTED').map((x) => x.institution));
     const status = $('#card-status');
-    status.replaceChildren(...consentNotes(d.status, 'card statements', CARD_STATUS));
+    status.replaceChildren(...consentNotes(d.status.filter((x) => !unsupported.has(x.institution)), 'card statements', CARD_STATUS));
+    // Banks that can't share statements, and cards without one: one note per bank.
+    const byBank = new Map([...unsupported].map((b) => [b, []]));
+    for (const c of missing) {
+      const k = unsupported.has(c.institution) ? c.institution : '';
+      if (!byBank.has(k)) byBank.set(k, []);
+      byBank.get(k).push(c.name);
+    }
+    for (const [bank, names] of byBank) {
+      const list = names.join(', ');
+      if (bank) {
+        status.appendChild(noteBox('', strong(bank), ` doesn’t share card statements through Plaid${names.length ? `, so the plan can’t include ${list} yet. Add ${names.length > 1 ? 'their statements' : 'its statement'} (or closing and due days) with ✎ next to the card.` : '. Add statements with ✎ next to its cards.'}`));
+      } else if (names.length) {
+        status.appendChild(noteBox('', strong(`${names.length} card${names.length > 1 ? 's' : ''} without a statement. `), `Without a statement balance and due date, the plan can’t include ${list}. Add ${names.length > 1 ? 'them' : 'it'} with ✎ next to the card.`));
+      }
+    }
     rawLinks($('#card-raw'), d.status);
 
     const warn = $('#card-warnings');
@@ -1449,25 +1466,33 @@ async function loadCards() {
       warn.appendChild(noteBox('critical', strong('A minimum payment can’t be made on time. '),
         `${money(t.minimum_short)} of minimums doesn’t fit before the due date${t.missed_minimums > 1 ? 's' : ''}; it’s planned for right after the next paycheck, but a late fee is likely. Moving money from savings (or a smaller buffer) avoids it.`));
     }
-    const missing = d.cards.filter((c) => c.needs_details && c.balance > 0);
-    if (missing.length) {
-      warn.appendChild(noteBox('', strong(`${missing.length} card${missing.length > 1 ? 's' : ''} without a statement. `),
-        'Without a statement balance and due date, the plan can’t include ', missing.map((c) => c.name).join(', '), '. Click Edit to add them.'));
-    }
     if (!t.below_buffer && !t.missed_minimums && t.due > 0 && t.unpaid === 0) {
-      warn.appendChild(noteBox('good', strong('Every statement can be paid in full on time. '), `No interest this month, and ${money(t.left_over)} stays in checking above your buffer.`));
+      const n = t.cards_paid;
+      const later = t.pay_after_paycheck > 0 ? ` ${money(t.pay_now)} can go out now; ${money(t.pay_after_paycheck)} waits for a paycheck.` : '';
+      warn.appendChild(noteBox('good', strong(`${n === 1 ? 'Your card' : `All ${n} cards`} can be paid in full on time, the last by ${shortDate(t.last_due)}. `),
+        `No interest this month.${later} After that, checking stays at least ${money(t.left_over)} above your buffer through ${shortDate(d.through)}.`));
     }
 
     $('#cp-checking').textContent = money(d.checking.total);
-    $('#cp-income').textContent = money(t.income);
-    $('#cp-bills').textContent = money(t.bills);
+    $('#cp-income').textContent = money(t.income_plan);
+    $('#cp-bills').textContent = money(t.bills_plan);
+    $('#cp-income-label').textContent = `Paychecks to ${shortDate(d.end)}`;
+    $('#cp-bills-label').textContent = `Bills to ${shortDate(d.end)}`;
     $('#cp-due').textContent = money(t.due);
-    $('#cp-pay').textContent = money(t.pay);
+    const dueNote = $('#cp-due-note');
+    dueNote.className = t.unpaid > 0 ? 'neg' : 'muted';
+    dueNote.textContent = !t.due ? 'nothing due' : t.unpaid > 0 ? `${money(t.unpaid)} can’t be paid by the due dates` : 'all paid by the due dates';
+    // Payments that need a paycheck to land first: more than checking has now.
+    $('#cp-later-tile').hidden = !(t.pay_after_paycheck > 0);
+    $('#cp-later').textContent = money(t.pay_after_paycheck);
+    $('#cp-later').className = 'neg';
+    $('#cp-later-note').textContent = `checking covers ${money(t.pay_now)} now`;
     $('#cp-interest').textContent = t.interest ? `~${money(t.interest)}` : money(0);
+    $('#cp-interest').className = t.interest > 0 ? 'neg' : '';
     $('#cp-interest-ytd').textContent = money(t.interest_ytd);
+    $('#cp-interest-ytd').className = t.interest_ytd > 0 ? 'neg' : '';
     $('#cp-util').replaceChildren(...(t.utilization == null ? ['—'] : [`${Math.round(t.utilization)}%`, utilBadge(t.utilization)]));
     $('#cp-util-note').textContent = t.utilization == null ? 'Add credit limits to see this' : `of ${wholeMoney(t.credit_limit)}${t.cards_without_limit ? ` · ${t.cards_without_limit} card${t.cards_without_limit > 1 ? 's' : ''} without a limit` : ''}`;
-    for (const id of ['cp-income', 'cp-bills']) $(`#${id}`).previousElementSibling.textContent = `${id === 'cp-income' ? 'Paychecks' : 'Bills'} to ${shortDate(d.through)}`;
 
     renderPlanTable(d);
     takePendingEdit('cards', d.cards, openCardDialog);
@@ -1481,23 +1506,48 @@ function renderPlanTable(d) {
   const table = $('#card-plan-table');
   table.replaceChildren();
   const head = el('tr');
-  ['Card', 'Still owed', 'Minimum', 'APR', 'Due', 'Plan', 'Interest', ''].forEach((h, i) => head.appendChild(el('th', { class: [1, 2, 3, 6].includes(i) ? 'num' : '' }, h)));
+  ['Card', 'Still owed', 'Minimum', 'APR', 'Due', 'Plan', 'Interest'].forEach((h, i) => head.appendChild(el('th', { class: [1, 2, 3, 6].includes(i) ? 'num' : '' }, h)));
   table.appendChild(el('thead')).appendChild(head);
   const body = el('tbody');
   if (!d.cards.length) {
     const tr = el('tr');
-    tr.appendChild(el('td', { colspan: 8, class: 'muted' }, 'No credit cards linked yet.'));
+    tr.appendChild(el('td', { colspan: 7, class: 'muted' }, 'No credit cards linked yet.'));
     body.appendChild(tr);
   }
   const incomeOn = (date) => d.timeline.find((e) => e.type === 'income' && e.date === date);
-  for (const c of d.cards) {
+  // Nothing owed and nothing to add: listed under the table instead of a row each.
+  const idle = (c) => !c.remaining && !(c.balance > 0) && !c.missing?.length && !c.overdue && !c.bank_overdue;
+  const zero = d.cards.filter(idle);
+  const foot = $('#card-zero');
+  foot.textContent = zero.length ? `Nothing owed on ${zero.map((c) => c.name).join(', ')}.` : '';
+  foot.hidden = !zero.length;
+  // Pay now (the money's in checking), then after a paycheck, then the rest.
+  const group = (c) => (c.funded_by === 'checking' ? 0 : c.funded_by ? 1 : 2);
+  const shown = d.cards.filter((c) => !idle(c)).map((c, i) => [c, i]).sort(([x, i], [y, j]) => group(x) - group(y) || i - j).map(([c]) => c);
+  const GROUPS = ['Pay now: the money’s in checking', 'After a paycheck: not enough in checking yet', 'Nothing to plan yet'];
+  let last = null;
+  for (const c of shown) {
+    const g = group(c);
+    if (g !== last && shown.some((x) => group(x) !== g)) {
+      const gr = el('tr', { class: 'plan-group' });
+      gr.appendChild(el('th', { colspan: 7, scope: 'colgroup' }, GROUPS[g]));
+      body.appendChild(gr);
+    }
+    last = g;
     const tr = el('tr');
     const name = el('td', { class: 'desc' });
-    name.append(el('strong', {}, c.name));
+    const needs = c.missing?.length;
+    const btn = el('button', { type: 'button', class: needs ? 'link-btn attention' : 'icon-btn edit-btn', title: needs ? `Missing: ${c.missing.join(', ')}` : `Edit ${c.name}`, 'aria-label': needs ? `Add details for ${c.name}` : `Edit ${c.name}` }, needs ? 'Add details' : '✎');
+    btn.addEventListener('click', () => openCardDialog(c, { highlight: !!needs }));
+    name.append(el('strong', {}, c.name), ' ', btn);
     const sub = c.statement_date
       ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since${c.in_transit?.length ? ' (incl. on the way)' : ''}` : ''}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : ''}`
       : `Balance ${money(c.balance || 0)} · no statement yet`;
     name.append(el('div', { class: 'sub' }, sub));
+    for (const p of c.possible_transit || []) {
+      name.append(el('div', { class: 'sub muted', title: 'Not counted: the amount doesn’t match this card’s statement and the description doesn’t show its last 4, so it may be for another card at the same bank.' },
+        `Possibly on the way: ${money(p.amount)} sent ${shortDate(p.date)} (not counted)`));
+    }
     for (const p of c.in_transit || []) {
       name.append(el('div', { class: 'sub transit' }, `On the way: ${money(p.amount)} sent ${shortDate(p.date)}${p.pending ? ' (pending)' : ''}, not on the card yet`));
     }
@@ -1514,7 +1564,8 @@ function renderPlanTable(d) {
     if (c.minimum_estimated) min.title = 'Estimated: your bank didn’t report the minimum';
     const apr = el('td', { class: 'num' });
     apr.append(aprText(c));
-    if (c.apr_assumed) apr.append(el('span', { class: 'badge', title: 'Your bank didn’t report the APR. Click Edit to add it.' }, 'assumed'));
+    if (c.apr_assumed) apr.append(el('span', { class: 'badge', title: 'Your bank didn’t report the APR. Click ✎ to add it.' }, 'assumed'));
+    else if (c.apr_mine) apr.append(el('span', { class: 'badge', title: 'You entered this APR' }, 'manual'));
     // The bank's balance per rate, when there's more than one.
     if ((c.rate_buckets || []).length > 1) {
       for (const b of c.rate_buckets) apr.append(el('div', { class: 'sub muted' }, `${b.apr}% on ${wholeMoney(b.balance)}`));
@@ -1528,7 +1579,10 @@ function renderPlanTable(d) {
     const steps = el('ul', { class: 'plan-steps' });
     if (c.needs_details) steps.appendChild(el('li', { class: 'muted' }, 'Add the statement to plan this card'));
     else if (!c.remaining) steps.appendChild(el('li', {}, c.statement_balance ? '✓ Statement paid' : 'Nothing due'));
-    for (const p of c.payments || []) {
+    // Everything paid by the due date is one step, whichever day it goes out.
+    const onTime = (c.payments || []).filter((p) => !p.late);
+    const steps2 = [...(onTime.length ? [{ amount: Math.round(onTime.reduce((s, p) => s + p.amount, 0) * 100) / 100, late: false }] : []), ...(c.payments || []).filter((p) => p.late)];
+    for (const p of steps2) {
       const li = el('li');
       if (!p.late) {
         li.append(strong(`Pay ${money(p.amount)}`), ` by ${shortDate(c.due_date)}`);
@@ -1553,15 +1607,9 @@ function renderPlanTable(d) {
     if (c.interest_charged != null) interest.append(el('div', { class: 'sub muted' }, `${money(c.interest_charged)} on last statement`));
     if (c.interest_ytd) interest.append(el('div', { class: 'sub muted' }, `${money(c.interest_ytd)} this year`));
 
-    const edit = el('td');
-    const needs = c.missing?.length;
-    const btn = el('button', { type: 'button', class: needs ? 'link-btn attention' : 'link-btn', title: needs ? `Missing: ${c.missing.join(', ')}` : '' }, needs ? 'Add details' : 'Edit');
-    btn.addEventListener('click', () => openCardDialog(c, { highlight: !!needs }));
-    edit.appendChild(btn);
     plan.className = 'plan-cell';
-    edit.className = 'edit-cell';
     [[owed, 'Still owed'], [min, 'Minimum'], [apr, 'APR'], [due, 'Due'], [plan, 'Plan'], [interest, 'Interest']].forEach(([td, label]) => td.setAttribute('data-label', label));
-    tr.append(name, owed, min, apr, due, plan, interest, edit);
+    tr.append(name, owed, min, apr, due, plan, interest);
     body.appendChild(tr);
   }
   table.appendChild(body);
@@ -1687,7 +1735,7 @@ $('#card-clear').addEventListener('click', async () => {
 // ------------------------------------------------------------------ Loans --
 const LOAN_STATUS = {
   PRODUCTS_NOT_SUPPORTED: 'doesn’t share loan details through Plaid. Click Edit on its loans to add them yourself.',
-  INVALID_PRODUCT: 'can’t share loan details yet: turn on the Liabilities product in your Plaid dashboard, or click Edit to add them yourself.',
+  INVALID_PRODUCT: 'can’t share loan details yet: turn on the Liabilities product in your Plaid dashboard, or add them yourself with ✎ next to each card.',
   PRODUCT_NOT_READY: 'is still preparing loan details. They’ll appear after the next update.',
 };
 const MONTH_YEAR = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
@@ -1778,7 +1826,9 @@ function loanPanel(loan, today) {
   if (progress) {
     fact('Payment number', `#${progress.paymentNumber} of ${progress.totalPayments}`, 'calculated', `${progress.totalPayments - progress.paymentNumber + 1} left on the original schedule`);
     const m = progress.monthsAhead, gap = Math.abs(progress.difference);
-    const [text, note] = Math.abs(m) <= 0 && gap < 200 ? ['On schedule', `balance matches the original ${money(progress.originalPayment)}/mo schedule`]
+    // Within the same month of the schedule is "on schedule", whichever way the dollars lean.
+    const [text, note] = m === 0 ? ['On schedule', gap < 1 ? `balance matches the original ${money(progress.originalPayment)}/mo schedule`
+        : `${money(gap)} ${progress.difference > 0 ? 'less' : 'more'} owed than the original schedule`]
       : m > 0 ? [`${m} month${m === 1 ? '' : 's'} ahead`, `${money(gap)} less owed than the original schedule`]
       : [`${-m} month${m === -1 ? '' : 's'} behind`, `${money(gap)} more owed than the original schedule`];
     fact('Progress', text, 'calculated', note);
