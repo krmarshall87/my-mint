@@ -1759,6 +1759,21 @@ function loanPanel(loan, today) {
   // Schedule starts with the next payment.
   const nextDue = loan.next_due_date.value && loan.next_due_date.value >= today ? loan.next_due_date.value.slice(0, 7) : ymAdd(today.slice(0, 7), 1);
   const base = amortize({ balance: loan.balance, rate: loan.rate.value, payment: loan.payment.value, start: nextDue });
+
+  // Against the original schedule: which payment this is, and ahead or behind.
+  const progress = loanProgress({
+    originalPrincipal: loan.original_principal.value, rate: loan.rate.value, term: loan.loan_term,
+    origination: loan.origination_date.value, maturity: loan.maturity_date.value, nextDue: `${nextDue}-01`, balance: loan.balance,
+  });
+  if (progress) {
+    fact('Payment number', `#${progress.paymentNumber} of ${progress.totalPayments}`, 'calculated', `${progress.totalPayments - progress.paymentNumber + 1} left on the original schedule`);
+    const m = progress.monthsAhead, gap = Math.abs(progress.difference);
+    const [text, note] = Math.abs(m) <= 0 && gap < 200 ? ['On schedule', `balance matches the original ${money(progress.originalPayment)}/mo schedule`]
+      : m > 0 ? [`${m} month${m === 1 ? '' : 's'} ahead`, `${money(gap)} less owed than the original schedule`]
+      : [`${-m} month${m === -1 ? '' : 's'} behind`, `${money(gap)} more owed than the original schedule`];
+    fact('Progress', text, 'calculated', note);
+  }
+  const offset = progress ? progress.paymentNumber - 1 : 0;
   if (base.never) {
     body.appendChild(el('p', { class: 'note-box critical' }, el('strong', {}, 'This payment doesn’t cover the interest, '), 'so the balance never goes down. Check the rate and payment with Edit.'));
     return panel;
@@ -1859,7 +1874,7 @@ function loanPanel(loan, today) {
     const series = [{ label: 'Current schedule', color: 'var(--tick)', dashed: !!what, values: base.rows.map((r) => r.balance) }];
     if (what) series.push({ label: 'With extra payments', color: 'var(--series-1)', values: base.rows.map((_, i) => (i < what.rows.length ? what.rows[i].balance : null)) });
     Charts.lines(chart, { labels, series, format: wholeMoney });
-    renderSchedule(schedTable, what || base, monthlyBox.checked, !!what);
+    renderSchedule(schedTable, what || base, monthlyBox.checked, !!what, offset);
   };
   for (const i of [extraIn, fromIn, lumpIn, lumpAtIn, extrasIn, lumpsIn]) i.addEventListener('input', update);
   modeIn.addEventListener('change', update);
@@ -1897,12 +1912,13 @@ function renderCompare(container, base, scenarios) {
 }
 
 // The schedule as a table: one row per year, or every payment.
-function renderSchedule(container, sched, monthly, withExtra) {
+// offset: payments already made, so # counts from the loan's first payment.
+function renderSchedule(container, sched, monthly, withExtra, offset = 0) {
   if (monthly) {
     Charts.table(container, {
       rows: sched.rows,
       columns: [
-        { label: '#', num: true, get: (r) => String(r.n) },
+        { label: '#', num: true, get: (r) => String(r.n + offset) },
         { label: 'Payment date', get: (r) => ymLabel(r.month) },
         { label: 'Starting balance', num: true, get: (r) => money(r.start) },
         { label: 'Principal', num: true, get: (r) => money(r.principal) },
