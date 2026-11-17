@@ -1501,8 +1501,11 @@ async function loadCards() {
     $('#cp-income-note').textContent = np ? `${shortDate(np.date)} · ${np.names.join(', ')}` : 'none found yet';
     $('#cp-bills-label').textContent = np ? 'Bills before it' : `Bills to ${shortDate(d.end)}`;
     $('#cp-bills').textContent = money(t.bills_before_paycheck);
-    const freeNow = d.checking.total - t.bills_before_paycheck - d.buffer;
-    $('#cp-bills-note').textContent = np ? `leaves ${money(Math.max(0, freeNow))} above your buffer for cards until ${shortDate(np.date)}` : '';
+    // What's left for the rest after the cards the plan pays now.
+    const freeNow = d.checking.total - t.bills_before_paycheck - d.buffer - t.pay_now;
+    $('#cp-bills-note').textContent = np
+      ? (t.pay_now > 0 ? `after the pay-now cards, ${money(Math.max(0, freeNow))} is free until ${shortDate(np.date)}` : `leaves ${money(Math.max(0, freeNow))} above your buffer for cards until ${shortDate(np.date)}`)
+      : '';
     $('#cp-due').textContent = money(t.due);
     const dueNote = $('#cp-due-note');
     dueNote.className = t.unpaid > 0 ? 'neg' : 'muted';
@@ -1524,7 +1527,7 @@ async function loadCards() {
     const tips = {
       'cp-checking': `What you can spend now in your checking accounts (available balance): ${d.checking.accounts.map((a) => `${a.name} ${money(a.balance ?? 0)}`).join(', ') || 'none linked'}${d.checking.reported > 0 ? `, ${money(d.checking.now)} in all, less ${money(d.checking.reported)} of card payments you marked paid that checking doesn’t show yet` : ''}. The plan pays cards only from checking.`,
       'cp-income': np ? `The next deposit the plan expects in checking: ${np.names.join(' and ')} on ${shortDate(np.date)}, found from your past paychecks (see “Paychecks found” below). Cards due after it can be paid from it. In all, ${money(t.income_plan)} of paychecks are expected through ${until}.` : 'No regular paychecks into checking were found in your history yet, so the plan uses only what’s in checking now.',
-      'cp-bills': `Regular bills from checking expected ${np ? `before your next paycheck (${shortDate(np.date)})` : `through ${until}`}, found from your history (Bills tab). Checking minus these bills and your buffer is what’s free for cards now. The plan still counts later bills too (${money(t.bills_plan)} through ${until}), so a payment never takes money a later bill needs.`,
+      'cp-bills': `Regular bills from checking expected ${np ? `before your next paycheck (${shortDate(np.date)})` : `through ${until}`}, found from your history (Bills tab). Checking minus these bills, your buffer and the cards the plan pays now is what’s still free today for the cards that wait on a paycheck. The plan still counts later bills too (${money(t.bills_plan)} through ${until}), so a payment never takes money a later bill needs.`,
       'cp-due': 'Every card’s statement balance, minus payments made since that statement (including ones on the way). Cards without a statement aren’t included.',
       'cp-later': `Planned card payments that checking can’t cover today without going below your ${money(d.buffer)} buffer. Each goes out after the paycheck named on its card.`,
       'cp-interest': `Interest (finance charges) your cards have charged since ${shortDate(d.today.slice(0, 8) + '01')}, from their transactions. Below it: the interest your banks reported on each card’s last statement, and the new interest this plan would add (whatever can’t be paid by a due date, at that card’s APR; none if every statement is paid in full on time). A card that carried a balance can still charge a little trailing interest on its next statement.`,
