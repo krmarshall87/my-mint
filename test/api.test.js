@@ -123,6 +123,12 @@ for (const store of stores) {
           assert.equal(Math.round((d.totals.pay_now + d.totals.pay_after_paycheck) * 100), Math.round(cards.filter((c) => c.funded_by).reduce((s, c) => s + c.pay, 0) * 100));
           // The summary looks only as far as the plan does.
           assert.ok(d.totals.income_plan <= d.totals.income && d.totals.bills_plan <= d.totals.bills);
+          // The near term: the next paycheck, and only the bills before it.
+          const np = d.totals.next_paycheck;
+          assert.ok(np && np.amount > 0 && np.date >= d.today, 'the stub has paychecks');
+          const before = d.timeline.filter((e) => e.type === 'bill' && e.date < np.date).reduce((s, e) => s - e.amount, 0);
+          assert.equal(Math.round(d.totals.bills_before_paycheck * 100), Math.round(before * 100));
+          assert.ok(d.totals.bills_before_paycheck <= d.totals.bills_plan + 0.001);
           if (cash === 20000) {
             assert.equal(d.totals.unpaid, 0);
             assert.equal(d.totals.interest, 0);

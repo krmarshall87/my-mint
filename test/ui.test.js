@@ -44,7 +44,7 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   // Every summary number explains itself: tapping (i) shows what it means.
   assert.equal(await page.locator('#view-cards .summary .info-btn').count(), 8);
   await page.locator('#cp-income').locator('xpath=..').locator('.info-btn').click();
-  assert.match(await page.locator('#view-cards .info-tip.open .tip').innerText(), /end of this plan/);
+  assert.match(await page.locator('#view-cards .info-tip.open .tip').innerText(), /next deposit the plan expects/);
   assert.match(await page.locator('#cp-interest').locator('xpath=..').innerText(), /Interest this month/);
   // "I paid this": the statement balance is preselected, and saving shows it on the card with an Undo.
   await page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' }).getByRole('button', { name: /I paid/ }).click();

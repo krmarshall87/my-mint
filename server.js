@@ -1966,6 +1966,15 @@ async function cardPlan({ buffer }) {
       // The same, only up to the last due date planned for (what the summary shows).
       income_plan: round2(events.filter((e) => e.type === 'income' && e.date <= end).reduce((s, e) => s + e.amount, 0)),
       bills_plan: round2(-events.filter((e) => e.type === 'bill' && e.date <= end).reduce((s, e) => s + e.amount, 0)),
+      // What matters for paying now: the next paycheck, and the bills before it.
+      ...(() => {
+        const next = events.find((e) => e.type === 'income' && e.date >= today);
+        const on = next ? events.filter((e) => e.type === 'income' && e.date === next.date) : [];
+        return {
+          next_paycheck: next ? { date: next.date, amount: round2(on.reduce((s, e) => s + e.amount, 0)), names: on.map((e) => e.name) } : null,
+          bills_before_paycheck: round2(-events.filter((e) => e.type === 'bill' && (!next || e.date < next.date) && e.date <= (next ? next.date : end)).reduce((s, e) => s + e.amount, 0)),
+        };
+      })(),
       // Card payments the money's in checking for today, and those waiting on a paycheck.
       pay_now: round2(cards.filter((c) => c.funded_by === 'checking').reduce((s, c) => s + c.pay, 0)),
       pay_after_paycheck: round2(cards.filter((c) => c.funded_by && c.funded_by !== 'checking').reduce((s, c) => s + c.pay, 0)),
