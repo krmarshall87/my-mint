@@ -55,6 +55,8 @@ added.push({ ...tx('chk', rel(-1), 'CHASE CREDIT CRD AUTOPAY', 40, pfc('LOAN_PAY
 added.push(tx('chk', rel(-2), 'CHASE CREDIT CRD EPAY', 800, pfc('LOAN_PAYMENTS', 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT')));
 // A transfer to savings at the same bank: not a card payment at all.
 added.push(tx('chk', rel(-2), 'ONLINE TRANSFER TO CHASE SAVINGS', 500, pfc('TRANSFER_OUT', 'TRANSFER_OUT_ACCOUNT_TRANSFER')));
+// STUB_REWARDS=1: $25 of cash back redeemed as a statement credit on Chase yesterday.
+if (process.env.STUB_REWARDS === '1') added.push(tx('chase', rel(-1), 'CASH BACK REDEMPTION CREDIT', -25, pfc('INCOME', 'INCOME_OTHER_INCOME')));
 added.push(tx('citi', ymd(Y, M - 1, 29), 'AMAZON REFUND', -40, pfc('GENERAL_MERCHANDISE', 'GENERAL_MERCHANDISE_ONLINE_MARKETPLACES')));
 // Linking the same bank again (public token 'relink') gives a new Item whose
 // accounts and transactions have new ids, as Plaid does.

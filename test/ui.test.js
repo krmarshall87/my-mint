@@ -61,6 +61,15 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await citiRow.getByRole('button', { name: /Remove the/ }).click();
   await page.waitForTimeout(800);
   assert.doesNotMatch(await page.locator('#card-plan-table').innerText(), /You paid/);
+  // "Apply rewards": just an amount, and the card shows it as rewards.
+  await page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' }).getByRole('button', { name: /Apply rewards/ }).click();
+  await page.waitForSelector('#paid-dialog[open]');
+  assert.equal(await page.locator('#paid-choices').isVisible(), false);
+  await page.locator('#paid-form input[name=amount]').fill('40');
+  await page.locator('#paid-form button[type=submit]').click();
+  await page.waitForSelector('#paid-dialog', { state: 'hidden' });
+  await page.waitForTimeout(800);
+  assert.match(await page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' }).innerText(), /Rewards: \$40\.00 applied/);
   // A card missing its statement: filling either closing field clears "Needed" on both.
   await page.locator('#card-plan-table tr', { hasText: 'OnePay' }).getByRole('button', { name: /Add details/ }).click();
   await page.waitForSelector('#card-dialog[open]');

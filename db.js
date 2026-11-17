@@ -168,6 +168,7 @@ const SCHEMA = [
     date DATE NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE reported_payments ADD COLUMN IF NOT EXISTS kind TEXT`,
   `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
   `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
 ];
@@ -464,12 +465,12 @@ class PgStore {
   }
 
   async listReportedPayments() {
-    const { rows } = await this.pool.query('SELECT id, account_id, amount, date::text AS date, created_at FROM reported_payments ORDER BY date, created_at');
-    return rows.map((r) => ({ id: r.id, account_id: r.account_id, amount: Number(r.amount), date: r.date, created_at: new Date(r.created_at).toISOString() }));
+    const { rows } = await this.pool.query('SELECT id, account_id, amount, date::text AS date, kind, created_at FROM reported_payments ORDER BY date, created_at');
+    return rows.map((r) => ({ id: r.id, account_id: r.account_id, amount: Number(r.amount), date: r.date, kind: r.kind || 'payment', created_at: new Date(r.created_at).toISOString() }));
   }
 
-  async addReportedPayment({ id, account_id, amount, date }, pruneBefore) {
-    await this.pool.query('INSERT INTO reported_payments (id, account_id, amount, date) VALUES ($1, $2, $3, $4)', [id, account_id, amount, date]);
+  async addReportedPayment({ id, account_id, amount, date, kind = 'payment' }, pruneBefore) {
+    await this.pool.query('INSERT INTO reported_payments (id, account_id, amount, date, kind) VALUES ($1, $2, $3, $4, $5)', [id, account_id, amount, date, kind]);
     if (pruneBefore) await this.pool.query('DELETE FROM reported_payments WHERE date < $1', [pruneBefore]);
   }
 
@@ -735,12 +736,12 @@ class FileStore {
   }
 
   async listReportedPayments() {
-    return [...(this.data.reportedPayments || [])].sort((a, b) => a.date.localeCompare(b.date) || a.created_at.localeCompare(b.created_at));
+    return [...(this.data.reportedPayments || [])].map((x) => ({ kind: 'payment', ...x })).sort((a, b) => a.date.localeCompare(b.date) || a.created_at.localeCompare(b.created_at));
   }
 
-  async addReportedPayment({ id, account_id, amount, date }, pruneBefore) {
+  async addReportedPayment({ id, account_id, amount, date, kind = 'payment' }, pruneBefore) {
     const list = (this.data.reportedPayments || []).filter((x) => !pruneBefore || x.date >= pruneBefore);
-    list.push({ id, account_id, amount, date, created_at: new Date().toISOString() });
+    list.push({ id, account_id, amount, date, kind, created_at: new Date().toISOString() });
     this.data.reportedPayments = list;
     this.save();
   }
