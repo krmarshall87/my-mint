@@ -1699,7 +1699,9 @@ async function cardPlan({ buffer }) {
     // Interest: what the bank charged on the last statement, and Finance Charges on this card this year.
     const charged = st.get(a.account_id)?.aprs?.filter((x) => x.interest != null);
     const year = today.slice(0, 4);
-    const ytd = txns.filter((t) => t.account_id === a.account_id && t.category === 'Finance Charge' && t.date.startsWith(year)).reduce((s, t) => s + t.amount, 0);
+    const charges = txns.filter((t) => t.account_id === a.account_id && t.category === 'Finance Charge' && t.date.startsWith(year));
+    const ytd = charges.reduce((s, t) => s + t.amount, 0);
+    const month = charges.filter((t) => t.date.startsWith(today.slice(0, 7))).reduce((s, t) => s + t.amount, 0);
     return {
       credit_limit: limit,
       credit_limit_source: a.credit_limit != null ? 'bank' : limit != null ? 'you' : null,
@@ -1707,6 +1709,7 @@ async function cardPlan({ buffer }) {
       to_30: limit > 0 ? round2(Math.max(0, owes - limit * 0.3)) : null,
       interest_charged: charged?.length ? round2(charged.reduce((s, x) => s + x.interest, 0)) : null,
       interest_ytd: round2(Math.max(0, ytd)),
+      interest_month: round2(Math.max(0, month)),
       account_id: a.account_id, name: acctNameOf(a), institution: a.institution_name, manual: a.manual, mine: us.get(a.account_id) || null,
       balance: a.current_balance, ...d, paid_since_statement: paid, remaining,
       minimum, minimum_estimated: d.minimum_payment == null && remaining != null,
@@ -1938,6 +1941,9 @@ async function cardPlan({ buffer }) {
       interest, card_debt: cardDebt,
       credit_limit: totalLimit, utilization, cards_without_limit: cards.length - limited.length,
       interest_ytd: round2(cards.reduce((s, c) => s + c.interest_ytd, 0)),
+      // Interest your cards actually charged this calendar month, and on their last statements.
+      interest_month: round2(cards.reduce((s, c) => s + c.interest_month, 0)),
+      interest_last_statements: round2(cards.reduce((s, c) => s + (c.interest_charged || 0), 0)),
       left_over: round2(Math.max(0, lowest - buffer)),
       lowest_balance: lowest,
       lowest_date: fromDayNum(dayNum(today) + lowDay),

@@ -148,6 +148,10 @@ for (const store of stores) {
           const citi = d.cards.find((c) => c.account_id === 'citi');
           assert.equal(citi.utilization, 40);
           assert.equal(citi.interest_charged, 61.2);
+          // Interest this month: what the cards charged since the 1st (never more than this year), plus the last statements'.
+          for (const c of d.cards) assert.ok(c.interest_month >= 0 && c.interest_month <= c.interest_ytd + 0.001, c.name);
+          assert.equal(Math.round(d.totals.interest_month * 100), Math.round(d.cards.reduce((s, c) => s + c.interest_month, 0) * 100));
+          assert.equal(d.totals.interest_last_statements, 61.2);
         } finally {
           await api.stop();
         }

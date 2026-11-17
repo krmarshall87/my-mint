@@ -1505,10 +1505,13 @@ async function loadCards() {
     $('#cp-later').textContent = money(t.pay_after_paycheck);
     $('#cp-later').className = 'neg';
     $('#cp-later-note').textContent = `checking covers ${money(t.pay_now)} now`;
-    $('#cp-interest').textContent = t.interest ? `~${money(t.interest)}` : money(0);
-    $('#cp-interest').className = t.interest > 0 ? 'neg' : '';
-    const ifUnpaid = d.cards.reduce((s, c) => s + (c.interest_if_unpaid || 0), 0);
-    $('#cp-interest-note').textContent = ifUnpaid > 0 ? `~${money(ifUnpaid)} if nothing is paid` : '';
+    // Interest actually charged this month; under it, the last statements' and what the plan adds.
+    $('#cp-interest').textContent = money(t.interest_month);
+    $('#cp-interest').className = t.interest_month > 0 ? 'neg' : '';
+    $('#cp-interest-note').textContent = [
+      t.interest_last_statements > 0 ? `${money(t.interest_last_statements)} on last statements` : null,
+      t.interest > 0 ? `~${money(t.interest)} more with this plan` : 'no new interest with this plan',
+    ].filter(Boolean).join(' · ');
     // What each number means, on hover, focus or tap.
     const until = shortDate(d.end);
     const tips = {
@@ -1517,7 +1520,7 @@ async function loadCards() {
       'cp-bills': `Regular bills paid from checking that are expected through ${until}, found from your history (Bills tab). Card payments aren’t included: they’re what this plan works out.`,
       'cp-due': 'Every card’s statement balance, minus payments made since that statement (including ones on the way). Cards without a statement aren’t included.',
       'cp-later': `Planned card payments that checking can’t cover today without going below your ${money(d.buffer)} buffer. Each goes out after the paycheck named on its card.`,
-      'cp-interest': 'New interest over the next month if you follow this plan: whatever can’t be paid by a card’s due date, at that card’s APR. $0 means every statement gets paid in full on time. A card that carried a balance last month can still charge a little trailing interest on its next statement, and interest already charged is under “Card interest paid this year”.',
+      'cp-interest': `Interest (finance charges) your cards have charged since ${shortDate(d.today.slice(0, 8) + '01')}, from their transactions. Below it: the interest your banks reported on each card’s last statement, and the new interest this plan would add (whatever can’t be paid by a due date, at that card’s APR; none if every statement is paid in full on time). A card that carried a balance can still charge a little trailing interest on its next statement.`,
       'cp-util': 'Card balances divided by credit limits, for cards with a known limit. Under 10% is low, under 30% OK; over 30% can lower a credit score.',
       'cp-interest-ytd': 'Interest (finance charges) your cards have charged since January 1, from their transactions.',
     };
