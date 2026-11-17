@@ -160,6 +160,14 @@ const SCHEMA = [
   `ALTER TABLE items ADD COLUMN IF NOT EXISTS consent_expires_at TIMESTAMPTZ`,
   `ALTER TABLE items ADD COLUMN IF NOT EXISTS product_status TEXT`,
   `ALTER TABLE transactions ADD COLUMN IF NOT EXISTS counterparty TEXT`,
+  // Card payments you said you made, until the bank shows them (Credit Cards tab only).
+  `CREATE TABLE IF NOT EXISTS reported_payments (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    amount NUMERIC NOT NULL,
+    date DATE NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  )`,
   `CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions (date DESC)`,
   `CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions (account_id)`,
 ];
@@ -237,6 +245,7 @@ class PgStore {
     await this.pool.query('DELETE FROM holdings WHERE item_id = $1', [itemId]);
     await this.pool.query('DELETE FROM card_statements WHERE item_id = $1', [itemId]);
     await this.pool.query('DELETE FROM card_settings WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
+    await this.pool.query('DELETE FROM reported_payments WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM balance_snapshots WHERE account_id IN (SELECT account_id FROM accounts WHERE item_id = $1)', [itemId]);
     await this.pool.query('DELETE FROM items WHERE item_id = $1', [itemId]);
   }
@@ -454,6 +463,21 @@ class PgStore {
     }
   }
 
+  async listReportedPayments() {
+    const { rows } = await this.pool.query('SELECT id, account_id, amount, date::text AS date, created_at FROM reported_payments ORDER BY date, created_at');
+    return rows.map((r) => ({ id: r.id, account_id: r.account_id, amount: Number(r.amount), date: r.date, created_at: new Date(r.created_at).toISOString() }));
+  }
+
+  async addReportedPayment({ id, account_id, amount, date }, pruneBefore) {
+    await this.pool.query('INSERT INTO reported_payments (id, account_id, amount, date) VALUES ($1, $2, $3, $4)', [id, account_id, amount, date]);
+    if (pruneBefore) await this.pool.query('DELETE FROM reported_payments WHERE date < $1', [pruneBefore]);
+  }
+
+  async deleteReportedPayment(id) {
+    const { rowCount } = await this.pool.query('DELETE FROM reported_payments WHERE id = $1', [id]);
+    return rowCount > 0;
+  }
+
   async listHoldings() {
     const { rows } = await this.pool.query('SELECT * FROM holdings ORDER BY value DESC');
     const num = (v) => (v === null ? null : Number(v));
@@ -609,6 +633,7 @@ class FileStore {
       this.data.snapshots = (this.data.snapshots || []).filter((x) => x.account_id !== k);
       this.data.holdings = (this.data.holdings || []).filter((x) => x.account_id !== k);
       delete this.data.cardStatements?.[k]; delete this.data.cardSettings?.[k];
+      this.data.reportedPayments = (this.data.reportedPayments || []).filter((x) => x.account_id !== k);
     }
     for (const [k, v] of Object.entries(this.data.transactions)) if (v.item_id === itemId) { delete this.data.transactions[k]; delete this.data.overrides?.[k]; }
     this.save();
@@ -707,6 +732,24 @@ class FileStore {
 
   async listHoldings() {
     return [...(this.data.holdings || [])].sort((a, b) => (b.value || 0) - (a.value || 0));
+  }
+
+  async listReportedPayments() {
+    return [...(this.data.reportedPayments || [])].sort((a, b) => a.date.localeCompare(b.date) || a.created_at.localeCompare(b.created_at));
+  }
+
+  async addReportedPayment({ id, account_id, amount, date }, pruneBefore) {
+    const list = (this.data.reportedPayments || []).filter((x) => !pruneBefore || x.date >= pruneBefore);
+    list.push({ id, account_id, amount, date, created_at: new Date().toISOString() });
+    this.data.reportedPayments = list;
+    this.save();
+  }
+
+  async deleteReportedPayment(id) {
+    const before = (this.data.reportedPayments || []).length;
+    this.data.reportedPayments = (this.data.reportedPayments || []).filter((x) => x.id !== id);
+    this.save();
+    return this.data.reportedPayments.length < before;
   }
 
   async listRules() {

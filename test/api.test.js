@@ -238,6 +238,80 @@ for (const store of stores) {
     });
   });
 
+  test(`[${store}] payments you mark paid, and statements without a date`, async (t) => {
+    const api = await startServer({ STUB_CASH: '9000' }, { store });
+    t.after(() => api.stop());
+    await linkBank(api);
+    const plan = async () => (await api.get('/api/card-plan?buffer=500')).body;
+    const card = (d, id) => d.cards.find((c) => c.account_id === id);
+    const today = new Date().toLocaleDateString('en-CA');
+    const daysAgo = (n) => new Date(Date.now() - n * 864e5).toLocaleDateString('en-CA');
+
+    await t.test('a reported payment counts as paid and comes off checking until the bank shows it', async () => {
+      const before = await plan();
+      const citi0 = card(before, 'citi');
+      assert.equal((await api.post('/api/cards/citi/payments', { amount: 0 })).status, 400);
+      assert.equal((await api.post('/api/cards/citi/payments', { amount: 100, date: daysAgo(6) })).status, 400, 'older than 5 days');
+      assert.equal((await api.post('/api/cards/citi/payments', { amount: 100, date: '2999-01-01' })).status, 400, 'in the future');
+      assert.equal((await api.post('/api/cards/chk/payments', { amount: 100 })).status, 404, 'not a card');
+      const r = await api.post('/api/cards/citi/payments', { amount: 1000 });
+      assert.equal(r.status, 200);
+      const after = await plan();
+      const citi = card(after, 'citi');
+      assert.equal(citi.reported.length, 1);
+      assert.equal(citi.reported[0].status, 'reported');
+      assert.equal(citi.reported[0].until > today, true);
+      assert.equal(citi.remaining, Math.round((citi0.remaining - 1000) * 100) / 100);
+      assert.equal(after.checking.reported, 1000);
+      assert.equal(after.checking.total, Math.round((before.checking.total - 1000) * 100) / 100);
+      assert.equal(after.checking.now, before.checking.total);
+      // Undo puts it back.
+      assert.equal((await api.del(`/api/cards/citi/payments/${r.body.id}`)).status, 200);
+      assert.equal((await api.del(`/api/cards/citi/payments/${r.body.id}`)).status, 404);
+      const undone = await plan();
+      assert.equal(card(undone, 'citi').remaining, citi0.remaining);
+      assert.equal(undone.checking.total, before.checking.total);
+    });
+
+    await t.test('once checking shows the payment, the real one counts instead (never both)', async () => {
+      const before = await plan();
+      // The stub's $800 Chase e-pay left checking two days ago but matched nothing Chase asked for.
+      assert.ok(card(before, 'chase').possible_transit.some((p) => p.amount === 800));
+      assert.equal((await api.post('/api/cards/chase/payments', { amount: 800 })).status, 200);
+      const after = await plan();
+      const chase = card(after, 'chase');
+      assert.equal(chase.reported[0].status, 'on_the_way');
+      assert.ok(chase.in_transit.some((p) => p.amount === 800), 'now counted as on the way');
+      assert.ok(!chase.possible_transit.some((p) => p.amount === 800));
+      assert.equal(chase.reported_open, 0);
+      assert.equal(after.checking.total, before.checking.total, 'checking already shows it');
+      assert.equal(chase.remaining, Math.max(0, Math.round((card(before, 'chase').remaining - 800) * 100) / 100));
+    });
+  });
+
+  test(`[${store}] a statement without its date asks for the cycle`, async () => {
+    const api = await startServer({ STUB_NODATE: '1' }, { store });
+    try {
+      await linkBank(api);
+      let chase = (await api.get('/api/card-plan')).body.cards.find((c) => c.account_id === 'chase');
+      assert.equal(chase.source, 'plaid');
+      assert.equal(chase.statement_date_missing, true);
+      assert.ok(chase.missing.includes('statement date'));
+      assert.ok((await api.get('/api/alerts')).body.some((a) => a.id.startsWith('missing:chase:')));
+      // With the cycle (closing 25 days before the bank's due date), the plan works out the
+      // statement itself and keeps the bank's $40 minimum for that same due date.
+      const due = chase.due_date;
+      assert.equal((await api.put('/api/cards/chase', { close_days_before_due: 25, due_day: Number(due.slice(8)) })).status, 200);
+      chase = (await api.get('/api/card-plan')).body.cards.find((c) => c.account_id === 'chase');
+      assert.equal(chase.source, 'cycle');
+      assert.equal(chase.statement_date_missing, false);
+      assert.ok(!chase.missing.includes('statement date'));
+      if (chase.due_date === due) assert.equal(chase.minimum_payment, 40);
+    } finally {
+      await api.stop();
+    }
+  });
+
   test(`[${store}] loans`, async (t) => {
     const api = await startServer({}, { store });
     t.after(() => api.stop());
