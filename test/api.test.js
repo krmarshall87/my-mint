@@ -339,6 +339,22 @@ for (const store of stores) {
       assert.equal(chase.statement_date_missing, true);
       assert.ok(chase.missing.includes('statement date'));
       assert.ok((await api.get('/api/alerts')).body.some((a) => a.id.startsWith('missing:chase:')));
+      // Just the statement date from you: the bank's balance, minimum and due date stay.
+      const date = new Date(Date.now() - 10 * 864e5).toLocaleDateString('en-CA');
+      assert.equal((await api.put('/api/cards/chase', { statement_date: date })).status, 200);
+      let dated = (await api.get('/api/card-plan')).body.cards.find((c) => c.account_id === 'chase');
+      assert.equal(dated.statement_date, date);
+      assert.equal(dated.statement_balance, 1800);
+      assert.equal(dated.minimum_payment, 40);
+      assert.equal(dated.due_date, chase.due_date);
+      assert.equal(dated.statement_date_from_you, true);
+      assert.equal(dated.statement_date_missing, false);
+      assert.ok(!dated.missing.includes('statement date') && !dated.missing.includes('statement'));
+      // A date you gave for a different due date doesn't pair with this statement.
+      assert.equal((await api.put('/api/cards/chase', { statement_date: date, due_date: '2001-01-01' })).status, 200);
+      dated = (await api.get('/api/card-plan')).body.cards.find((c) => c.account_id === 'chase');
+      assert.equal(dated.statement_date_missing, true);
+      assert.equal(dated.statement_balance, 1800);
       // With the cycle (closing 25 days before the bank's due date), the plan works out the
       // statement itself and keeps the bank's $40 minimum for that same due date.
       const due = chase.due_date;

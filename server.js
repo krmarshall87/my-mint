@@ -1587,6 +1587,15 @@ function minimumFrom(us, balance) {
 // The card's details: Plaid's statement unless yours is newer; then the cycle
 // you set up (closing and due day); your APR and promo always win.
 function cardDetails(a, st, us, today, txns = []) {
+  // Only a statement date from you (no balance): it's the date the bank left out
+  // of its own statement, so the bank's balance, minimum and due date stay. It
+  // pairs only with that statement (same due date); the next statement asks again.
+  if (us.statement_date && us.statement_balance == null) {
+    if (st && st.statement_balance != null && !st.statement_date && (!us.due_date || !st.due_date || us.due_date === st.due_date)) {
+      st = { ...st, statement_date: us.statement_date, date_from_you: true };
+    }
+    us = { ...us, statement_date: undefined };
+  }
   const cycle = !st?.statement_date ? statementCycle(us, today) : null;
   const mine = us.statement_date && (!st?.statement_date || us.statement_date > st.statement_date) && (!cycle || us.statement_date >= cycle.statement_date);
   const fromCycle = cycle && !mine;
@@ -1600,6 +1609,7 @@ function cardDetails(a, st, us, today, txns = []) {
   const regularApr = us.apr ?? (plaidApr || null);
   return {
     source: mine ? 'you' : fromCycle ? 'cycle' : st ? 'plaid' : null,
+    statement_date_from_you: !mine && !fromCycle && !!st?.date_from_you,
     // The bank sent a statement balance but not when it closed (Bank of America
     // does this), so it may be an old statement. The cycle (closing day) fixes it.
     statement_date_missing: !mine && !fromCycle && st?.statement_balance != null && !st?.statement_date,
