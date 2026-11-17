@@ -1589,7 +1589,8 @@ function cardDetails(a, st, us, today, txns = []) {
   const mine = us.statement_date && (!st?.statement_date || us.statement_date > st.statement_date) && (!cycle || us.statement_date >= cycle.statement_date);
   const fromCycle = cycle && !mine;
   const cycled = fromCycle ? { ...cycle, statement_balance: balanceOn(a, cycle.statement_date, txns) } : null;
-  if (cycled) cycled.minimum_payment = minimumFrom(us, cycled.statement_balance);
+  // Your minimum rule, else the bank's minimum when it's for the same due date.
+  if (cycled) cycled.minimum_payment = minimumFrom(us, cycled.statement_balance) ?? (st?.due_date === cycled.due_date ? st.minimum_payment ?? null : null);
   const src = mine ? us : fromCycle ? cycled : st || {};
   const purchase = st?.aprs?.find((x) => x.type === 'purchase_apr');
   const plaidApr = purchase?.apr ?? (st?.aprs?.length ? Math.max(...st.aprs.map((x) => x.apr ?? 0)) : null);
@@ -1597,6 +1598,9 @@ function cardDetails(a, st, us, today, txns = []) {
   const regularApr = us.apr ?? (plaidApr || null);
   return {
     source: mine ? 'you' : fromCycle ? 'cycle' : st ? 'plaid' : null,
+    // The bank sent a statement balance but not when it closed (Bank of America
+    // does this), so it may be an old statement. The cycle (closing day) fixes it.
+    statement_date_missing: !mine && !fromCycle && st?.statement_balance != null && !st?.statement_date,
     statement_balance: src.statement_balance ?? null,
     statement_date: src.statement_date ?? null,
     due_date: src.due_date ?? us.due_date ?? null,
@@ -1610,17 +1614,20 @@ function cardDetails(a, st, us, today, txns = []) {
   };
 }
 
+// How long a payment you reported waits for the bank to show it before it's dropped.
+const REPORT_DAYS = 5;
+
 async function cardPlan({ buffer }) {
   const today = isoDate(new Date());
-  const [accounts, statements, settings, txns, bills, holdings] = await Promise.all([
-    listAccounts(), store.listCardStatements(), store.listCardSettings(), categorizedTransactions(), detectRecurring(), store.listHoldings(),
+  const [accounts, statements, settings, txns, bills, holdings, reports] = await Promise.all([
+    listAccounts(), store.listCardStatements(), store.listCardSettings(), categorizedTransactions(), detectRecurring(), store.listHoldings(), store.listReportedPayments(),
   ]);
   const st = new Map(statements.map((x) => [x.account_id, x]));
   const us = new Map(settings.map((x) => [x.account_id, x]));
   const checking = accounts.filter((a) => cashKind(a) === 'checking');
   const savings = accounts.filter((a) => cashKind(a) === 'savings');
   const checkingIds = new Set(checking.map((a) => a.account_id));
-  const cash = round2(checking.reduce((s, a) => s + (a.available_balance ?? a.current_balance ?? 0), 0));
+  const checkingNow = round2(checking.reduce((s, a) => s + (a.available_balance ?? a.current_balance ?? 0), 0));
 
   // Cards and what's still owed on each statement.
   // Card payments that left checking but haven't posted to the card yet. Only
@@ -1654,12 +1661,34 @@ async function cardPlan({ buffer }) {
     // Already posted on that card (same amount, from 2 days before to 10 after)? Then it isn't in transit.
     if ((inflowsByCard.get(card.account_id) || []).some((c) => Math.abs(c.amount + t.amount) < 0.01 && dayNum(c.date) >= dayNum(t.date) - 2 && dayNum(c.date) - dayNum(t.date) <= 10)) continue;
     const l = inTransit.get(card.account_id) || [];
-    l.push({ date: t.date, amount: round2(t.amount), name: t.display_name || t.name, pending: t.pending, mask_match: maskMatch });
+    l.push({ id: t.transaction_id, date: t.date, amount: round2(t.amount), name: t.display_name || t.name, pending: t.pending, mask_match: maskMatch });
     inTransit.set(card.account_id, l);
   }
 
+  // Payments you said you made ("Paid"), until the bank shows them. Within
+  // REPORT_DAYS: if the card shows a payment of that amount, or checking shows a
+  // card payment of it, the real one counts instead (on the way if it's only
+  // left checking). Otherwise the report counts as paid on the card and comes off
+  // checking. After REPORT_DAYS with nothing seen it's dropped as a false report.
+  const reportStatus = new Map(); // report id -> { status, tx }
+  const usedTx = new Set();
+  const near = (x, y) => Math.abs(x - y) <= 1;
+  const from = (r) => dayNum(r.date) - 2;
+  for (const r of reports) {
+    const age = dayNum(today) - dayNum(r.date);
+    if (age < 0 || age > REPORT_DAYS) continue;
+    const onCard = txns.find((t) => t.account_id === r.account_id && t.amount < 0 && near(-t.amount, r.amount) && dayNum(t.date) >= from(r) && !usedTx.has(t.transaction_id));
+    if (onCard) { usedTx.add(onCard.transaction_id); reportStatus.set(r.id, { status: 'posted' }); continue; }
+    const out = txns.find((t) => checkingIds.has(t.account_id) && t.amount > 0 && near(t.amount, r.amount) && dayNum(t.date) >= from(r) && isRealCardPayment(t) && !usedTx.has(t.transaction_id));
+    if (out) { usedTx.add(out.transaction_id); reportStatus.set(r.id, { status: 'on_the_way', tx: out }); continue; }
+    reportStatus.set(r.id, { status: 'reported' });
+  }
+  const reportsFor = (id) => reports.filter((r) => r.account_id === id && reportStatus.has(r.id))
+    .map((r) => ({ id: r.id, date: r.date, amount: r.amount, status: reportStatus.get(r.id).status, until: fromDayNum(dayNum(r.date) + REPORT_DAYS), tx: reportStatus.get(r.id).tx }));
+
   const cards = accounts.filter((a) => a.type === 'credit').map((a) => {
     const d = cardDetails(a, st.get(a.account_id), us.get(a.account_id) || {}, today, txns);
+    const reported = reportsFor(a.account_id);
     const paidTx = d.statement_date
       ? txns.filter((t) => t.account_id === a.account_id && t.amount < 0 && t.date > d.statement_date && isCardPayment(t)).reduce((s, t) => s - t.amount, 0)
       : 0;
@@ -1671,9 +1700,17 @@ async function cardPlan({ buffer }) {
     // counted, since it may be for another card at the same bank that isn't linked.
     const wanted = [d.statement_balance, d.minimum_payment, d.statement_balance != null ? d.statement_balance - posted : null, d.last_payment_amount].filter((x) => x > 0);
     const candidates = (inTransit.get(a.account_id) || []).filter((p) => !d.statement_date || p.date > d.statement_date);
-    const transit = candidates.filter((p) => p.mask_match || wanted.some((w) => Math.abs(w - p.amount) <= 1));
+    // A payment you reported that has left checking is on the way for this card, whatever it matched.
+    const confirmed = reported.filter((r) => r.status === 'on_the_way').map((r) => r.tx);
+    const transit = [
+      ...candidates.filter((p) => p.mask_match || wanted.some((w) => Math.abs(w - p.amount) <= 1) || confirmed.some((t) => t.transaction_id === p.id)),
+      ...confirmed.filter((t) => !candidates.some((p) => p.id === t.transaction_id) && !(inflowsByCard.get(a.account_id) || []).some((c) => near(-c.amount, t.amount) && dayNum(c.date) >= dayNum(t.date) - 2))
+        .map((t) => ({ id: t.transaction_id, date: t.date, amount: round2(t.amount), name: t.display_name || t.name, pending: t.pending, mask_match: false })),
+    ];
     const possibleTransit = candidates.filter((p) => !transit.includes(p));
-    const paid = round2(posted + transit.reduce((s, p) => s + p.amount, 0));
+    // Reported and not seen yet: counts as paid.
+    const reportedOpen = round2(reported.filter((r) => r.status === 'reported').reduce((s, r) => s + r.amount, 0));
+    const paid = round2(posted + transit.reduce((s, p) => s + p.amount, 0) + reportedOpen);
     const remaining = d.statement_balance == null ? null : round2(Math.max(0, d.statement_balance - paid));
     const minimum = remaining == null ? null : round2(Math.min(remaining, Math.max(0, (d.minimum_payment ?? Math.max(35, remaining * 0.02)) - paid)));
     // 1. The bank's balance per rate (purchases, balance transfers, promos).
@@ -1709,6 +1746,8 @@ async function cardPlan({ buffer }) {
       rate_buckets: userRate ? [] : buckets.map((x) => ({ type: x.type, apr: x.apr, balance: x.balance })),
       promo_balance: promoBalance,
       in_transit: transit,
+      reported: reported.map(({ tx, ...r }) => r),
+      reported_open: reportedOpen,
       possible_transit: possibleTransit,
       // The bank says past due, unless the minimum has since been paid (or is on the way).
       bank_overdue: !!st.get(a.account_id)?.is_overdue && minimum > 0.01,
@@ -1716,7 +1755,7 @@ async function cardPlan({ buffer }) {
       needs_details: d.statement_balance == null || d.due_date == null,
       // What you could add (Edit) to make the plan exact.
       missing: (a.current_balance || 0) > 0 ? [
-        ...(d.statement_balance == null || d.due_date == null ? ['statement'] : []),
+        ...(d.statement_balance == null || d.due_date == null ? ['statement'] : d.statement_date_missing ? ['statement date'] : []),
         ...(aprAssumed ? ['APR'] : []),
         ...(limit == null ? ['credit limit'] : []),
       ] : [],
@@ -1727,6 +1766,10 @@ async function cardPlan({ buffer }) {
     if (c.promo?.from_plaid && c.rate_buckets.some((x) => x.apr >= 1)) c.promo = null;
     return c;
   });
+
+  // Checking, less the payments you reported that it doesn't show yet.
+  const reportedOut = round2(cards.reduce((s, c) => s + c.reported_open, 0));
+  const cash = round2(checkingNow - reportedOut);
 
   // Days from today to the last due date we're planning for (at least 30).
   const planned = cards.filter((c) => !c.needs_details && c.remaining > 0);
@@ -1914,7 +1957,7 @@ async function cardPlan({ buffer }) {
   cards.sort((x, y) => (x.needs_details - y.needs_details) || (x.due_date || '9').localeCompare(y.due_date || '9'));
   return {
     today, end, through, buffer,
-    checking: { total: cash, accounts: checking.map((a) => ({ name: acctNameOf(a), balance: a.available_balance ?? a.current_balance })) },
+    checking: { total: cash, now: checkingNow, reported: reportedOut, accounts: checking.map((a) => ({ name: acctNameOf(a), balance: a.available_balance ?? a.current_balance })) },
     savings: savingsTotal,
     income: income.map(({ next, ...p }) => { let d = next(p.last_date); while (d && d < today) d = next(d); return { ...p, next_date: d }; }),
     totals: {
@@ -1988,6 +2031,30 @@ app.put('/api/cards/:id', async (req, res) => {
   if ((closes === 1) !== (out.due_day != null)) return res.status(400).json({ error_message: 'Add both when the statement closes and the due day' });
   await store.setCardSettings(req.params.id, Object.keys(out).length ? out : null);
   res.json({ ok: true, details: out });
+});
+
+// "Paid": a card payment you made that the bank doesn't show yet. It counts on
+// the Credit Cards tab only, for up to REPORT_DAYS or until the real one appears.
+app.post('/api/cards/:id/payments', async (req, res) => {
+  const accounts = await store.listAccounts();
+  const a = accounts.find((x) => x.account_id === req.params.id);
+  if (!a || a.type !== 'credit') return res.status(404).json({ error_message: 'Unknown credit card' });
+  const amount = Number(req.body?.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 1e7) return res.status(400).json({ error_message: 'Enter the amount you paid' });
+  const today = isoDate(new Date());
+  const date = req.body?.date || today;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today || dayNum(today) - dayNum(date) > REPORT_DAYS) {
+    return res.status(400).json({ error_message: `The payment date must be within the last ${REPORT_DAYS} days` });
+  }
+  const id = crypto.randomUUID();
+  await store.addReportedPayment({ id, account_id: a.account_id, amount: round2(amount), date }, fromDayNum(dayNum(today) - 30));
+  res.json({ ok: true, id });
+});
+app.delete('/api/cards/:id/payments/:pid', async (req, res) => {
+  const mine = (await store.listReportedPayments()).find((r) => r.id === req.params.pid && r.account_id === req.params.id);
+  if (!mine) return res.status(404).json({ error_message: 'Unknown payment' });
+  await store.deleteReportedPayment(mine.id);
+  res.json({ ok: true });
 });
 
 // ----------------------------------------------------------------- loans --

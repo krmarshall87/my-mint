@@ -46,6 +46,21 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await page.locator('#cp-income').locator('xpath=..').locator('.info-btn').click();
   assert.match(await page.locator('#view-cards .info-tip.open .tip').innerText(), /end of this plan/);
   assert.match(await page.locator('#cp-interest').locator('xpath=..').innerText(), /Interest this month/);
+  // "I paid this": the statement balance is preselected, and saving shows it on the card with an Undo.
+  await page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' }).getByRole('button', { name: /I paid/ }).click();
+  await page.waitForSelector('#paid-dialog[open]');
+  assert.equal(await page.locator('#paid-form input[name=kind]:checked').getAttribute('value'), 'statement');
+  await page.locator('#paid-form input[value=custom]').check();
+  await page.locator('#paid-form input[name=amount]').fill('250');
+  await page.locator('#paid-form button[type=submit]').click();
+  await page.waitForSelector('#paid-dialog', { state: 'hidden' });
+  await page.waitForTimeout(800);
+  const citiRow = page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' });
+  assert.match(await citiRow.innerText(), /You paid \$250\.00/);
+  assert.match(await page.locator('#cp-checking-note').innerText(), /\$250\.00 you marked paid/);
+  await citiRow.getByRole('button', { name: /Remove the/ }).click();
+  await page.waitForTimeout(800);
+  assert.doesNotMatch(await page.locator('#card-plan-table').innerText(), /You paid/);
   // The car loan has no rate yet: its note must read as text.
   await page.goto(`${api.base}/#loans`);
   await page.waitForTimeout(800);

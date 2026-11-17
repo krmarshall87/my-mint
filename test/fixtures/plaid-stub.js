@@ -1,5 +1,6 @@
 // Preload for tests: replaces Plaid API calls with canned, sandbox-shaped responses.
 // Dates are relative to today. STUB_MODE: ok | consent | noliab. STUB_CASH, STUB_MTG, STUB_EXPIRY_DAYS.
+// STUB_NODATE=1: Chase's statement comes without its date (as Bank of America's does).
 const { PlaidApi } = require('plaid');
 const mode = process.env.STUB_MODE || 'ok';
 const ok = (data) => Promise.resolve({ data });
@@ -82,7 +83,7 @@ Object.assign(PlaidApi.prototype, {
     { account_id: 'citi', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 29.99, balance_subject_to_apr: 2500, interest_charge_amount: 61.2 }, { apr_type: 'balance_transfer_apr', apr_percentage: 0, balance_subject_to_apr: 1000 }, { apr_type: 'cash_apr', apr_percentage: 31.99 }], is_overdue: false,
       last_payment_amount: 500, last_payment_date: ymd(Y, M - 1, 28), last_statement_balance: 3500, last_statement_issue_date: ymd(Y, M - 1, 15), minimum_payment_amount: 105, next_payment_due_date: rel(5) },
     { account_id: 'chase', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 22.49 }], is_overdue: true,
-      last_payment_amount: 1200, last_payment_date: ymd(Y, M - 1, 10), last_statement_balance: 1800, last_statement_issue_date: ymd(Y, M - 1, 22), minimum_payment_amount: 40, next_payment_due_date: rel(12) },
+      last_payment_amount: 1200, last_payment_date: ymd(Y, M - 1, 10), last_statement_balance: 1800, last_statement_issue_date: process.env.STUB_NODATE === '1' ? null : ymd(Y, M - 1, 22), minimum_payment_amount: 40, next_payment_due_date: rel(12) },
     { account_id: 'disc', aprs: [{ apr_type: 'purchase_apr', apr_percentage: 0 }], is_overdue: true,
       last_payment_amount: null, last_payment_date: null, last_statement_balance: 700, last_statement_issue_date: ymd(Y, M - 1, 30), minimum_payment_amount: 35, next_payment_due_date: rel(20) },
   ], mortgage: [{ account_id: 'mtg', account_number: '3120194012', interest_rate: { percentage: 6.25, type: 'fixed' }, next_monthly_payment: 1800, next_payment_due_date: rel(8), last_payment_amount: 1800, last_payment_date: rel(-23), maturity_date: '2053-06-01', origination_date: '2023-06-01', origination_principal_amount: 255000, loan_term: '30 year', loan_type_description: 'conventional', escrow_balance: 2100.5, has_pmi: true, has_prepayment_penalty: false, past_due_amount: 0, ytd_interest_paid: 13900, ytd_principal_paid: 2600 }], student: [] } }),

@@ -281,7 +281,7 @@
         <div id="card-status"></div>
         <div id="card-warnings"></div>
         <div class="summary">
-          <div><span>Checking now</span><strong id="cp-checking">$0</strong></div>
+          <div><span>Checking now</span><strong id="cp-checking">$0</strong><small class="muted" id="cp-checking-note"></small></div>
           <div><span id="cp-income-label">Paychecks coming</span><strong id="cp-income">$0</strong></div>
           <div><span id="cp-bills-label">Bills coming</span><strong id="cp-bills">$0</strong></div>
           <div><span>Statements still owed</span><strong id="cp-due">$0</strong><small class="muted" id="cp-due-note"></small></div>
@@ -465,6 +465,26 @@
     </form>
   </dialog>
 
+  <dialog id="paid-dialog" class="dialog" aria-labelledby="paid-title">
+    <form id="paid-form" method="dialog">
+      <h3 id="paid-title">I paid this card</h3>
+      <p class="muted">For a payment your bank doesn’t show yet. It counts on this page only (what’s still owed, and what’s left in checking) until the real payment shows up, or for 5 days if it never does.</p>
+      <fieldset class="field-group paid-choices">
+        <legend>How much</legend>
+        <label class="choice"><input type="radio" name="kind" value="statement" /> <span>Statement balance <strong id="paid-statement"></strong></span></label>
+        <label class="choice"><input type="radio" name="kind" value="current" /> <span>Current balance <strong id="paid-current"></strong></span></label>
+        <label class="choice"><input type="radio" name="kind" value="custom" /> <span>Another amount</span></label>
+        <label class="field">Amount <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" autocomplete="off" /></label>
+      </fieldset>
+      <label class="field">Paid on <input name="date" type="date" /></label>
+      <p id="paid-error" class="form-error" hidden></p>
+      <div class="dialog-actions">
+        <span class="spacer"></span>
+        <button type="button" id="paid-cancel" class="btn">Cancel</button>
+        <button type="submit" class="btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="card-dialog" class="dialog" aria-labelledby="card-title">
     <form id="card-form" method="dialog">
       <h3 id="card-title">Card details</h3>

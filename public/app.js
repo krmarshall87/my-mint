@@ -177,7 +177,7 @@ function markNeeded(form, names) {
   (inputs[0] || form.querySelector('input'))?.focus();
 }
 const LOAN_FIELDS_FOR = { 'interest rate': ['rate'], 'monthly payment': ['payment'] };
-const CARD_FIELDS_FOR = { statement: ['closing_day', 'due_day'], APR: ['apr'], 'credit limit': ['credit_limit'] };
+const CARD_FIELDS_FOR = { statement: ['closing_day', 'due_day'], 'statement date': ['closing_day', 'close_days_before_due', 'due_day'], APR: ['apr'], 'credit limit': ['credit_limit'] };
 
 const expiringSoon = (i) => i.expires_in_days != null && i.expires_in_days <= 30;
 const ERROR_TEXT = {
@@ -1492,6 +1492,7 @@ async function loadCards() {
     }
 
     $('#cp-checking').textContent = money(d.checking.total);
+    $('#cp-checking-note').textContent = d.checking.reported > 0 ? `after ${money(d.checking.reported)} you marked paid` : '';
     $('#cp-income').textContent = money(t.income_plan);
     $('#cp-bills').textContent = money(t.bills_plan);
     $('#cp-income-label').textContent = `Paychecks to ${shortDate(d.end)}`;
@@ -1515,7 +1516,7 @@ async function loadCards() {
     // What each number means, on hover, focus or tap.
     const until = shortDate(d.end);
     const tips = {
-      'cp-checking': `What you can spend now in your checking accounts (available balance): ${d.checking.accounts.map((a) => `${a.name} ${money(a.balance ?? 0)}`).join(', ') || 'none linked'}. The plan pays cards only from checking.`,
+      'cp-checking': `What you can spend now in your checking accounts (available balance): ${d.checking.accounts.map((a) => `${a.name} ${money(a.balance ?? 0)}`).join(', ') || 'none linked'}${d.checking.reported > 0 ? `, ${money(d.checking.now)} in all, less ${money(d.checking.reported)} of card payments you marked paid that checking doesn’t show yet` : ''}. The plan pays cards only from checking.`,
       'cp-income': `Paychecks expected in checking from today through ${until}, the end of this plan (your last card due date, or at least 30 days out). Found from your past deposits; see “Paychecks found” below.`,
       'cp-bills': `Regular bills paid from checking that are expected through ${until}, found from your history (Bills tab). Card payments aren’t included: they’re what this plan works out.`,
       'cp-due': 'Every card’s statement balance, minus payments made since that statement (including ones on the way). Cards without a statement aren’t included.',
@@ -1560,7 +1561,7 @@ function renderPlanTable(d) {
   // Pay now (the money's in checking), then after a paycheck, then the rest.
   const group = (c) => (c.funded_by === 'checking' ? 0 : c.funded_by ? 1 : 2);
   const shown = d.cards.filter((c) => !idle(c)).map((c, i) => [c, i]).sort(([x, i], [y, j]) => group(x) - group(y) || i - j).map(([c]) => c);
-  const GROUPS = ['Pay now: the money’s in checking', 'After a paycheck: not enough in checking yet', 'Nothing to plan yet'];
+  const GROUPS = ['Pay now: the money’s in checking', 'After a paycheck: not enough in checking yet', 'Paid, or nothing to plan yet'];
   let last = null;
   for (const c of shown) {
     const g = group(c);
@@ -1578,8 +1579,29 @@ function renderPlanTable(d) {
     name.append(el('strong', {}, c.name), ' ', btn);
     const sub = c.statement_date
       ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since${c.in_transit?.length ? ' (incl. on the way)' : ''}` : ''}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : ''}`
+      : c.statement_balance != null ? `Statement balance ${money(c.statement_balance)} (date not given) · balance now ${money(c.balance || 0)}`
       : `Balance ${money(c.balance || 0)} · no statement yet`;
     name.append(el('div', { class: 'sub' }, sub));
+    if (c.statement_date_missing) {
+      name.append(el('div', { class: 'sub attention-text', title: 'Click ✎ and add when the statement closes (a day of the month, or days before the due date) so the plan can work out the current statement.' },
+        'Your bank didn’t say when this statement closed, so it may be an old one'));
+    }
+    // Payments you marked paid: counted until the bank shows them, then the real one counts.
+    for (const r of c.reported || []) {
+      const line = el('div', { class: `sub ${r.status === 'reported' ? 'transit' : 'muted'}` });
+      line.append(r.status === 'reported'
+        ? `You paid ${money(r.amount)} on ${shortDate(r.date)}: counted until it shows (by ${shortDate(r.until)}) `
+        : `✓ Your ${money(r.amount)} payment ${r.status === 'posted' ? 'is on the card' : 'has left checking'} `);
+      if (r.status === 'reported') {
+        const undo = el('button', { type: 'button', class: 'link-btn', 'aria-label': `Remove the ${money(r.amount)} payment` }, 'Undo');
+        undo.addEventListener('click', async () => {
+          await api(`/api/cards/${encodeURIComponent(c.account_id)}/payments/${encodeURIComponent(r.id)}`, { method: 'DELETE' });
+          await loadCards();
+        });
+        line.append(undo);
+      }
+      name.append(line);
+    }
     for (const p of c.possible_transit || []) {
       name.append(el('div', { class: 'sub muted', title: 'Not counted: the amount doesn’t match this card’s statement and the description doesn’t show its last 4, so it may be for another card at the same bank.' },
         `Possibly on the way: ${money(p.amount)} sent ${shortDate(p.date)} (not counted)`));
@@ -1635,6 +1657,11 @@ function renderPlanTable(d) {
     if (c.promo && !c.promo_ending && c.unpaid > 0 && c.payments?.length) steps.appendChild(el('li', { class: 'muted' }, `${money(c.unpaid)} left on the 0% promo`));
     if (c.promo_ending && c.balance > 0) steps.appendChild(el('li', {}, strong(`Pay off all ${money(c.balance)} by ${shortDate(c.promo_ending)}`), el('span', { class: 'sub muted' }, 'when the promo ends, interest may be charged back to the purchase date')));
     plan.appendChild(steps);
+    if ((c.balance || 0) > 0 || c.remaining > 0) {
+      const paidBtn = el('button', { type: 'button', class: 'link-btn paid-btn', 'aria-label': `I paid ${c.name}` }, 'I paid this');
+      paidBtn.addEventListener('click', () => openPaidDialog(c));
+      plan.appendChild(paidBtn);
+    }
 
     const interest = el('td', { class: 'num interest-cell' });
     // What a month of interest would cost if this statement went unpaid, then what the plan leaves.
@@ -1771,11 +1798,57 @@ $('#card-clear').addEventListener('click', async () => {
   await loadCards();
 });
 
+// "I paid this": statement balance, current balance, or another amount.
+const paidForm = $('#paid-form');
+let payingCard = null;
+function openPaidDialog(c) {
+  payingCard = c;
+  $('#paid-title').textContent = `I paid ${c.name}`;
+  const statement = c.remaining ?? null, current = c.balance > 0 ? c.balance : null;
+  $('#paid-statement').textContent = statement != null ? money(statement) : '(no statement)';
+  $('#paid-current').textContent = current != null ? money(current) : '—';
+  paidForm.kind[0].disabled = !(statement > 0);
+  paidForm.kind[1].disabled = !(current > 0);
+  const first = statement > 0 ? 'statement' : current > 0 ? 'current' : 'custom';
+  paidForm.kind.value = first;
+  paidForm.amount.value = first === 'statement' ? statement : first === 'current' ? current : '';
+  const today = iso(new Date());
+  paidForm.date.value = today;
+  paidForm.date.max = today;
+  paidForm.date.min = iso(new Date(Date.now() - 5 * 864e5));
+  $('#paid-error').hidden = true;
+  $('#paid-dialog').showModal();
+}
+paidForm.addEventListener('change', (e) => {
+  if (e.target.name !== 'kind' || !payingCard) return;
+  const v = e.target.value;
+  if (v === 'statement') paidForm.amount.value = payingCard.remaining;
+  else if (v === 'current') paidForm.amount.value = payingCard.balance;
+  else { paidForm.amount.value = ''; paidForm.amount.focus(); }
+});
+paidForm.amount.addEventListener('input', () => {
+  const n = Number(paidForm.amount.value);
+  paidForm.kind.value = n === payingCard?.remaining ? 'statement' : n === payingCard?.balance ? 'current' : 'custom';
+});
+paidForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    await api(`/api/cards/${encodeURIComponent(payingCard.account_id)}/payments`, { method: 'POST', body: { amount: paidForm.amount.value, date: paidForm.date.value } });
+    $('#paid-dialog').close();
+    await loadCards();
+  } catch (err) {
+    const box = $('#paid-error');
+    box.textContent = err.message;
+    box.hidden = false;
+  }
+});
+$('#paid-cancel').addEventListener('click', () => $('#paid-dialog').close());
+
 
 // ------------------------------------------------------------------ Loans --
 const LOAN_STATUS = {
   PRODUCTS_NOT_SUPPORTED: 'doesn’t share loan details through Plaid. Click Edit on its loans to add them yourself.',
-  INVALID_PRODUCT: 'can’t share loan details yet: turn on the Liabilities product in your Plaid dashboard, or add them yourself with ✎ next to each card.',
+  INVALID_PRODUCT: 'can’t share loan details yet: turn on the Liabilities product in your Plaid dashboard, or click Edit on each loan to add them yourself.',
   PRODUCT_NOT_READY: 'is still preparing loan details. They’ll appear after the next update.',
 };
 const MONTH_YEAR = new Intl.DateTimeFormat(undefined, { month: 'short', year: 'numeric', timeZone: 'UTC' });
