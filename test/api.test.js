@@ -220,6 +220,22 @@ for (const store of stores) {
       assert.equal(onep.minimum_payment, Math.round(Math.max(40, onep.statement_balance * 0.01) * 100) / 100);
       assert.ok(!(await api.get('/api/alerts')).body.some((a) => a.id.startsWith('missing:onep:')));
     });
+
+    await t.test('a card can close a set number of days before its due date', async () => {
+      assert.equal((await api.put('/api/cards/onep', { closing_day: 12, close_days_before_due: 23, due_day: 5 })).status, 400, 'one way of closing');
+      assert.equal((await api.put('/api/cards/onep', { close_days_before_due: 23 })).status, 400, 'needs the due day');
+      assert.equal((await api.put('/api/cards/onep', { close_days_before_due: 0, due_day: 5 })).status, 400);
+      assert.equal((await api.put('/api/cards/onep', { close_days_before_due: 23, due_day: 5, apr: 20.24 })).status, 200);
+      const onep = await card('onep');
+      assert.equal(onep.source, 'cycle');
+      assert.equal(onep.due_date.slice(8), '05');
+      // The latest statement that has closed, 23 days before its due date (a weekend moved to Friday).
+      const gap = (Date.parse(onep.due_date) - Date.parse(onep.statement_date)) / 864e5;
+      assert.ok(gap >= 23 && gap <= 25, `${gap} days`);
+      assert.ok(![0, 6].includes(new Date(`${onep.statement_date}T00:00:00Z`).getUTCDay()), 'never a weekend');
+      const today = new Date().toLocaleDateString('en-CA');
+      assert.ok(onep.statement_date <= today);
+    });
   });
 
   test(`[${store}] loans`, async (t) => {
