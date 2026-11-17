@@ -41,6 +41,11 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await page.goto(`${api.base}/#cards`);
   await page.waitForTimeout(800);
   assert.match(await page.locator('#card-plan-table').innerText(), /~\$[\d,.]+ if not paid[\s\S]*with this plan/);
+  // Every summary number explains itself: tapping (i) shows what it means.
+  assert.equal(await page.locator('#view-cards .summary .info-btn').count(), 8);
+  await page.locator('#cp-income').locator('xpath=..').locator('.info-btn').click();
+  assert.match(await page.locator('#view-cards .info-tip.open .tip').innerText(), /end of this plan/);
+  assert.match(await page.locator('#cp-interest').locator('xpath=..').innerText(), /Interest with this plan/);
   // The car loan has no rate yet: its note must read as text.
   await page.goto(`${api.base}/#loans`);
   await page.waitForTimeout(800);

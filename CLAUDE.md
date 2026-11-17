@@ -100,4 +100,5 @@ My Mint is a personal app: Plaid-linked bank accounts and their transactions in 
 - Budget and alert status colors (`--good`, `--warning`, `--critical`) are reserved for status and always ship with a label ("$9 over") or an icon, never color alone.
 - The look is Mint-inspired but our own: no Intuit or Mint logos, artwork or copied assets.
 - **Ask for what's missing.** When a value only the owner can give is missing (a loan's rate or payment, a card's statement, APR or limit), say so and offer the fix. Cards carry `missing` from `cardPlan()`, loans from `/api/loans`. `/api/alerts` raises one `missing:<account>:<fields>` alert each, with an `edit-card` / `edit-loan` action. `askFor(view, id)` in `app.js` opens that tab, then its dialog with the needed fields marked (`markNeeded`).
+- **Explain numbers:** a summary number whose meaning isn't obvious gets an (i) via `infoTip(label, text)` in `app.js` (shows on hover, keyboard focus or tap). Say what it counts and over what dates.
 - Alerts are computed on each request from the data (`/api/alerts`), so there's no alert state to sync. Dismissals are per-browser (`localStorage`).

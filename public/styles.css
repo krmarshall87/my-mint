@@ -497,3 +497,10 @@ input, select { font: inherit; color: var(--text); background: var(--panel); bor
 .plan-table .link-btn.attention { font-size: 12px; margin-left: 2px; }
 .plan-table tr.plan-group th { text-align: left; font-size: 12px; font-weight: 600; color: var(--muted); background: var(--bg); padding-top: 8px; padding-bottom: 6px; border-top: 2px solid var(--border); }
 @media (max-width: 700px) { .plan-table tr.plan-group { display: block; padding: 8px 14px; } .plan-table tr.plan-group th { display: block; padding: 0; background: none; border: 0; } }
+/* (i) info buttons: the explanation shows under the tile on hover, keyboard focus or tap. */
+.summary > div { position: relative; }
+.info-btn { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; padding: 0; border: 1px solid currentColor; border-radius: 50%; background: none; color: var(--muted); font: italic 600 10px/1 Georgia, serif; cursor: help; vertical-align: 1px; }
+.info-btn:hover, .info-btn:focus-visible { color: var(--link); }
+.info-tip .tip { display: none; position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 20; padding: 8px 10px; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, .15); font-size: 12px; font-weight: 400; line-height: 1.4; white-space: normal; text-align: left; }
+.info-tip:hover .tip, .info-btn:focus-visible + .tip, .info-tip.open .tip { display: block; }
+@media (max-width: 860px) { .summary .info-tip .tip { left: -8px; right: -8px; } }
