@@ -70,6 +70,9 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await page.waitForSelector('#paid-dialog', { state: 'hidden' });
   await page.waitForTimeout(800);
   assert.match(await page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' }).innerText(), /Rewards: \$40\.00 applied/);
+  // The plan pays the statement less the rewards, and the statement line says so.
+  const citiText = await page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' }).innerText();
+  assert.match(citiText, /− \$40\.00 rewards/);
   // A card missing its statement: filling either closing field clears "Needed" on both.
   await page.locator('#card-plan-table tr', { hasText: 'OnePay' }).getByRole('button', { name: /Add details/ }).click();
   await page.waitForSelector('#card-dialog[open]');
