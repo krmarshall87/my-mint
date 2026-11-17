@@ -1738,7 +1738,7 @@ function openCardDialog(c, { highlight = false } = {}) {
   const set = (k, v, ph) => { cardForm[k].value = v ?? ''; cardForm[k].placeholder = ph ?? ''; };
   set('apr', mine.apr, c.apr_assumed ? 'not reported' : String(c.regular_apr ?? c.apr));
   set('credit_limit', mine.credit_limit, c.credit_limit_source === 'bank' ? String(c.credit_limit) : 'not reported');
-  for (const k of ['closing_day', 'due_day', 'min_floor', 'min_pct']) set(k, mine[k], '');
+  for (const k of ['closing_day', 'close_days_before_due', 'due_day', 'min_floor', 'min_pct']) set(k, mine[k], '');
   // The cycle is only needed when the bank doesn't share statements.
   $('#card-cycle').open = c.source !== 'plaid';
   set('promo_apr', mine.promo_apr, '');
@@ -1753,7 +1753,7 @@ function openCardDialog(c, { highlight = false } = {}) {
 cardForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = {};
-  for (const k of ['credit_limit', 'apr', 'promo_apr', 'promo_end', 'closing_day', 'due_day', 'min_floor', 'min_pct', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
+  for (const k of ['credit_limit', 'apr', 'promo_apr', 'promo_end', 'closing_day', 'close_days_before_due', 'due_day', 'min_floor', 'min_pct', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
   try {
     await api(`/api/cards/${encodeURIComponent(editingCard.account_id)}`, { method: 'PUT', body });
     $('#card-dialog').close();

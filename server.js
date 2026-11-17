@@ -1568,17 +1568,8 @@ const isCardPayment = (t) => t.category === 'Credit Card Payment' || t.category_
 
 // For cards whose bank doesn't share statements: from the statement closing
 // day and due day you entered, the latest statement date and its due date.
-const dayIn = (y, m, d) => new Date(Date.UTC(y, m, Math.min(d, new Date(Date.UTC(y, m + 1, 0)).getUTCDate()))).toISOString().slice(0, 10);
-function statementCycle(us, today) {
-  if (!us.closing_day || !us.due_day) return null;
-  const [y, m] = today.split('-').map(Number);
-  let close = dayIn(y, m - 1, us.closing_day);
-  if (close > today) close = dayIn(y, m - 2, us.closing_day);
-  const [cy, cm] = close.split('-').map(Number);
-  let due = dayIn(cy, cm - 1, us.due_day);
-  if (due <= close) due = dayIn(cy, cm, us.due_day);
-  return { statement_date: close, due_date: due };
-}
+// Statement cycles (closing day, or days before the due date): cycle.js.
+const { statementCycle } = require('./cycle');
 // The balance on the closing date: today's balance minus everything posted since.
 function balanceOn(a, date, txns) {
   if (a.current_balance == null) return null;
@@ -1964,7 +1955,7 @@ app.get('/api/card-plan', async (req, res) => {
 });
 
 // Your own details for a card: APR, a 0% promo, or the statement for a manual card.
-const CARD_FIELDS = { closing_day: 'day', due_day: 'day', min_floor: 'money', min_pct: 'pct', credit_limit: 'money', apr: 'pct', promo_apr: 'pct', promo_end: 'date', statement_balance: 'money', statement_date: 'date', due_date: 'date', minimum_payment: 'money' };
+const CARD_FIELDS = { closing_day: 'day', close_days_before_due: 'days', due_day: 'day', min_floor: 'money', min_pct: 'pct', credit_limit: 'money', apr: 'pct', promo_apr: 'pct', promo_end: 'date', statement_balance: 'money', statement_date: 'date', due_date: 'date', minimum_payment: 'money' };
 app.put('/api/cards/:id', async (req, res) => {
   const accounts = await store.listAccounts();
   const a = accounts.find((x) => x.account_id === req.params.id);
@@ -1976,6 +1967,10 @@ app.put('/api/cards/:id', async (req, res) => {
     if (kind === 'date') {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || Number.isNaN(Date.parse(v))) return res.status(400).json({ error_message: `${k} must be a date (YYYY-MM-DD)` });
       out[k] = v;
+    } else if (kind === 'days') {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < 1 || n > 60) return res.status(400).json({ error_message: `${k} must be a number of days (1–60)` });
+      out[k] = n;
     } else if (kind === 'day') {
       const n = Number(v);
       if (!Number.isInteger(n) || n < 1 || n > 31) return res.status(400).json({ error_message: `${k} must be a day of the month (1–31)` });
@@ -1987,7 +1982,10 @@ app.put('/api/cards/:id', async (req, res) => {
     }
   }
   if (out.statement_balance != null && !out.statement_date) return res.status(400).json({ error_message: 'Add the statement date with the statement balance' });
-  if ((out.closing_day == null) !== (out.due_day == null)) return res.status(400).json({ error_message: 'Add both the statement closing day and the due day' });
+  // A cycle needs the due day and one way of closing: a fixed day, or days before the due date.
+  const closes = (out.closing_day != null) + (out.close_days_before_due != null);
+  if (closes > 1) return res.status(400).json({ error_message: 'Use either the closing day or the days before the due date, not both' });
+  if ((closes === 1) !== (out.due_day != null)) return res.status(400).json({ error_message: 'Add both when the statement closes and the due day' });
   await store.setCardSettings(req.params.id, Object.keys(out).length ? out : null);
   res.json({ ok: true, details: out });
 });

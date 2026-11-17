@@ -485,13 +485,16 @@
         <summary>Statement cycle (when your bank doesn’t share statements)</summary>
         <div class="field-row">
           <label class="field">Statement closes on day <input name="closing_day" type="number" min="1" max="31" step="1" inputmode="numeric" placeholder="e.g. 3" autocomplete="off" /></label>
+          <label class="field">or days before the due date <input name="close_days_before_due" type="number" min="1" max="60" step="1" inputmode="numeric" placeholder="e.g. 23" autocomplete="off" /></label>
+        </div>
+        <div class="field-row">
           <label class="field">Payment due on day <input name="due_day" type="number" min="1" max="31" step="1" inputmode="numeric" placeholder="e.g. 28" autocomplete="off" /></label>
         </div>
         <div class="field-row">
           <label class="field">Minimum: at least $ <input name="min_floor" type="number" min="0" step="1" inputmode="decimal" placeholder="e.g. 35" autocomplete="off" /></label>
           <label class="field">or % of the balance <input name="min_pct" type="number" min="0" max="100" step="0.01" inputmode="decimal" placeholder="e.g. 1" autocomplete="off" /></label>
         </div>
-        <span class="hint">Each month the app works out the statement balance on the closing day (today’s balance minus everything posted since), the due date, and the minimum (the greater of the two). It’s in your cardholder agreement or on any statement. Leave the minimum blank to have it estimated.</span>
+        <span class="hint">Fill in one way of closing: some cards close on the same day each month, others a set number of days before the due date (moved to the Friday before when it lands on a weekend). Each month the app works out the statement balance on the closing day (today’s balance minus everything posted since), the due date, and the minimum (the greater of the two). It’s in your cardholder agreement or on any statement. Leave the minimum blank to have it estimated.</span>
       </details>
       <fieldset class="field-group">
         <legend>Latest statement</legend>
