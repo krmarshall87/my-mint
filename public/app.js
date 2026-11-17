@@ -1548,6 +1548,12 @@ async function loadCards() {
   });
 }
 
+// "…, $X paid since, − $Y rewards": payments and rewards credits since the statement, separately.
+function paidPart(c) {
+  const rewards = c.rewards_applied || 0;
+  const payments = Math.round(((c.paid_since_statement || 0) - rewards) * 100) / 100;
+  return `${payments > 0 ? `, ${money(payments)} paid since${c.in_transit?.length ? ' (incl. on the way)' : ''}` : ''}${rewards > 0 ? `, − ${money(rewards)} rewards` : ''}`;
+}
 function renderPlanTable(d) {
   const table = $('#card-plan-table');
   table.replaceChildren();
@@ -1587,7 +1593,7 @@ function renderPlanTable(d) {
     btn.addEventListener('click', () => openCardDialog(c, { highlight: !!needs }));
     name.append(el('strong', {}, c.name), ' ', btn);
     const sub = c.statement_date
-      ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${c.paid_since_statement ? `, ${money(c.paid_since_statement)} paid since${c.in_transit?.length ? ' (incl. on the way)' : ''}` : ''}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : ''}`
+      ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${paidPart(c)}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : ''}`
       : c.statement_balance != null ? `Statement balance ${money(c.statement_balance)} (date not given) · balance now ${money(c.balance || 0)}`
       : `Balance ${money(c.balance || 0)} · no statement yet`;
     name.append(el('div', { class: 'sub' }, sub));
