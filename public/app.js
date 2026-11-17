@@ -1568,15 +1568,17 @@ function renderPlanTable(d) {
   }
   const incomeOn = (date) => d.timeline.find((e) => e.type === 'income' && e.date === date);
   // Nothing owed and nothing to add: listed under the table instead of a row each.
-  const idle = (c) => !c.remaining && !(c.balance > 0) && !c.missing?.length && !c.overdue && !c.bank_overdue;
+  // Kept as a row when something happened this cycle (a payment, rewards, or one you marked), so it can be undone.
+  const idle = (c) => !c.remaining && !(c.balance > 0) && !c.missing?.length && !c.overdue && !c.bank_overdue
+    && !(c.paid_since_statement > 0) && !(c.reported || []).length;
   const zero = d.cards.filter(idle);
   const foot = $('#card-zero');
   foot.textContent = zero.length ? `Nothing owed on ${zero.map((c) => c.name).join(', ')}.` : '';
   foot.hidden = !zero.length;
   // Pay now (the money's in checking), then after a paycheck, then the rest.
-  const group = (c) => (c.funded_by === 'checking' ? 0 : c.funded_by ? 1 : 2);
+  const group = (c) => (c.funded_by === 'checking' ? 0 : c.funded_by ? 1 : c.statement_balance != null && !c.needs_details && !(c.remaining > 0) ? 2 : 3);
   const shown = d.cards.filter((c) => !idle(c)).map((c, i) => [c, i]).sort(([x, i], [y, j]) => group(x) - group(y) || i - j).map(([c]) => c);
-  const GROUPS = ['Pay now: the money’s in checking', 'After a paycheck: not enough in checking yet', 'Paid, or nothing to plan yet'];
+  const GROUPS = ['Pay now: the money’s in checking', 'After a paycheck: not enough in checking yet', 'Paid this cycle', 'Nothing to plan yet'];
   let last = null;
   for (const c of shown) {
     const g = group(c);

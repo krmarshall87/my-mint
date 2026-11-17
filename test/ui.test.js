@@ -61,6 +61,15 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await citiRow.getByRole('button', { name: /Remove the/ }).click();
   await page.waitForTimeout(800);
   assert.doesNotMatch(await page.locator('#card-plan-table').innerText(), /You paid/);
+  // A card you marked paid stays on the page, under "Paid this cycle", with its Undo.
+  await page.locator('#card-plan-table tr', { hasText: 'Chase Freedom' }).getByRole('button', { name: /I paid/ }).click();
+  await page.waitForSelector('#paid-dialog[open]');
+  await page.locator('#paid-form button[type=submit]').click();
+  await page.waitForSelector('#paid-dialog', { state: 'hidden' });
+  await page.waitForTimeout(800);
+  assert.match(await page.locator('#card-plan-table').innerText(), /PAID THIS CYCLE[\s\S]*Chase Freedom/i);
+  await page.locator('#card-plan-table tr', { hasText: 'Chase Freedom' }).getByRole('button', { name: /Remove the/ }).click();
+  await page.waitForTimeout(800);
   // "Apply rewards": just an amount, and the card shows it as rewards.
   await page.locator('#card-plan-table tr', { hasText: 'Citi Double Cash' }).getByRole('button', { name: /Apply rewards/ }).click();
   await page.waitForSelector('#paid-dialog[open]');
