@@ -128,14 +128,19 @@ for (const store of stores) {
             assert.equal(d.totals.interest, 0);
             for (const c of cards) assert.equal(c.pay, c.remaining);
           } else {
-            assert.ok(d.totals.unpaid > 0);
+            // Whether paychecks land before the due dates depends on today's date,
+            // so check the rules, not that something is always left unpaid.
             // Extra money goes to interest-bearing cards first: the 0% promo card only gets its minimum.
             const promo = cards.find((c) => c.account_id === 'disc');
             assert.ok(promo.promo);
             // More than its minimum only once every interest-charging balance is covered.
             const interestLeft = cards.filter((c) => !c.promo).some((c) => c.remaining - (c.promo_balance || 0) - c.pay - c.pay_late > 0.01);
             if (interestLeft) assert.ok(promo.pay <= promo.minimum + 0.01, 'promo card only gets its minimum');
-            assert.ok(d.suggestions.some((s) => s.type === 'savings'), 'suggests savings');
+            // Short of what's owed (or of the buffer): savings is suggested; never otherwise.
+            // (A 0% promo only needs its minimum on time.)
+            const owedLeft = cards.some((c) => (c.promo && !c.promo_ending ? c.minimum : c.remaining) - c.pay > 0.005);
+            const short = owedLeft || d.totals.below_buffer > 0;
+            assert.equal(d.suggestions.some((s) => s.type === 'savings'), short, 'suggests savings exactly when short');
             assert.ok(!d.suggestions.some((s) => s.type === 'investments'), 'card debt is under the investment threshold');
           }
           if (cash === 200) assert.ok(d.totals.below_buffer > 0, 'bills alone overdraw checking');

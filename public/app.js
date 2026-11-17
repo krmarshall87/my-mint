@@ -1420,6 +1420,24 @@ const noteBox = (level, ...parts) => {
   return p;
 };
 const strong = (t) => el('strong', {}, t);
+// An (i) after a label that explains it on hover or keyboard focus, or on tap (phones don't hover).
+function infoTip(label, text) {
+  label.querySelector('.info-tip')?.remove();
+  const wrap = el('span', { class: 'info-tip' });
+  const btn = el('button', { type: 'button', class: 'info-btn', 'aria-label': `About ${label.textContent.trim()}`, 'aria-expanded': 'false' }, 'i');
+  const tip = el('span', { class: 'tip', role: 'tooltip' }, text);
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = !wrap.classList.contains('open');
+    document.querySelectorAll('.info-tip.open').forEach((x) => { x.classList.remove('open'); x.querySelector('button').setAttribute('aria-expanded', 'false'); });
+    wrap.classList.toggle('open', open);
+    btn.setAttribute('aria-expanded', String(open));
+  });
+  wrap.append(btn, tip);
+  label.append(' ', wrap);
+}
+document.addEventListener('click', () => document.querySelectorAll('.info-tip.open').forEach((x) => { x.classList.remove('open'); x.querySelector('button').setAttribute('aria-expanded', 'false'); }));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') document.querySelectorAll('.info-tip.open').forEach((x) => x.classList.remove('open')); });
 // Credit utilization: under 10% is great, over 30% starts to hurt a credit score. Always with a label.
 function utilBadge(pct) {
   const [cls, label] = pct > 30 ? ['util-high', 'over 30%'] : ['util-good', pct <= 10 ? 'low' : 'OK'];
@@ -1489,6 +1507,21 @@ async function loadCards() {
     $('#cp-later-note').textContent = `checking covers ${money(t.pay_now)} now`;
     $('#cp-interest').textContent = t.interest ? `~${money(t.interest)}` : money(0);
     $('#cp-interest').className = t.interest > 0 ? 'neg' : '';
+    const ifUnpaid = d.cards.reduce((s, c) => s + (c.interest_if_unpaid || 0), 0);
+    $('#cp-interest-note').textContent = ifUnpaid > 0 ? `~${money(ifUnpaid)} if nothing is paid` : '';
+    // What each number means, on hover, focus or tap.
+    const until = shortDate(d.end);
+    const tips = {
+      'cp-checking': `What you can spend now in your checking accounts (available balance): ${d.checking.accounts.map((a) => `${a.name} ${money(a.balance ?? 0)}`).join(', ') || 'none linked'}. The plan pays cards only from checking.`,
+      'cp-income': `Paychecks expected in checking from today through ${until}, the end of this plan (your last card due date, or at least 30 days out). Found from your past deposits; see “Paychecks found” below.`,
+      'cp-bills': `Regular bills paid from checking that are expected through ${until}, found from your history (Bills tab). Card payments aren’t included: they’re what this plan works out.`,
+      'cp-due': 'Every card’s statement balance, minus payments made since that statement (including ones on the way). Cards without a statement aren’t included.',
+      'cp-later': `Planned card payments that checking can’t cover today without going below your ${money(d.buffer)} buffer. Each goes out after the paycheck named on its card.`,
+      'cp-interest': 'New interest over the next month if you follow this plan: whatever can’t be paid by a card’s due date, at that card’s APR. $0 means every statement gets paid in full on time. A card that carried a balance last month can still charge a little trailing interest on its next statement, and interest already charged is under “Card interest paid this year”.',
+      'cp-util': 'Card balances divided by credit limits, for cards with a known limit. Under 10% is low, under 30% OK; over 30% can lower a credit score.',
+      'cp-interest-ytd': 'Interest (finance charges) your cards have charged since January 1, from their transactions.',
+    };
+    for (const [id, text] of Object.entries(tips)) infoTip($(`#${id}`).parentElement.querySelector('span'), text);
     $('#cp-interest-ytd').textContent = money(t.interest_ytd);
     $('#cp-interest-ytd').className = t.interest_ytd > 0 ? 'neg' : '';
     $('#cp-util').replaceChildren(...(t.utilization == null ? ['—'] : [`${Math.round(t.utilization)}%`, utilBadge(t.utilization)]));
