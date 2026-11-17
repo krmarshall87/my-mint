@@ -295,6 +295,41 @@ for (const store of stores) {
     });
   });
 
+  test(`[${store}] rewards applied as a statement credit`, async (t) => {
+    const api = await startServer({ STUB_CASH: '9000', STUB_REWARDS: '1' }, { store });
+    t.after(() => api.stop());
+    await linkBank(api);
+    const plan = async () => (await api.get('/api/card-plan?buffer=500')).body;
+    const card = (d, id) => d.cards.find((c) => c.account_id === id);
+
+    await t.test('rewards you apply lower what is owed, but not the minimum or checking', async () => {
+      const before = await plan();
+      const citi0 = card(before, 'citi');
+      const r = await api.post('/api/cards/citi/payments', { amount: 100, kind: 'rewards' });
+      assert.equal(r.status, 200);
+      const after = await plan();
+      const citi = card(after, 'citi');
+      assert.equal(citi.reported[0].kind, 'rewards');
+      assert.equal(citi.rewards_applied, 100);
+      assert.equal(citi.remaining, Math.round((citi0.remaining - 100) * 100) / 100);
+      assert.equal(citi.minimum, Math.min(citi0.minimum, citi.remaining), 'the minimum still has to be paid');
+      assert.equal(after.checking.total, before.checking.total, 'nothing leaves checking');
+      assert.equal(after.checking.reported, 0);
+      await api.del(`/api/cards/citi/payments/${r.body.id}`);
+    });
+
+    await t.test('a rewards credit on the card counts once, whether or not you applied it', async () => {
+      const d = await plan();
+      const chase = card(d, 'chase');
+      assert.equal(chase.rewards_applied, 25, 'the redemption credit since the statement counts');
+      assert.equal((await api.post('/api/cards/chase/payments', { amount: 25, kind: 'rewards' })).status, 200);
+      const again = card(await plan(), 'chase');
+      assert.equal(again.reported[0].status, 'posted');
+      assert.equal(again.rewards_applied, 25, 'never twice');
+      assert.equal(again.remaining, chase.remaining);
+    });
+  });
+
   test(`[${store}] a statement without its date asks for the cycle`, async () => {
     const api = await startServer({ STUB_NODATE: '1' }, { store });
     try {

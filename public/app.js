@@ -1598,11 +1598,15 @@ function renderPlanTable(d) {
     // Payments you marked paid: counted until the bank shows them, then the real one counts.
     for (const r of c.reported || []) {
       const line = el('div', { class: `sub ${r.status === 'reported' ? 'transit' : 'muted'}` });
+      const rewards = r.kind === 'rewards';
       line.append(r.status === 'reported'
-        ? `You paid ${money(r.amount)} on ${shortDate(r.date)}: counted until it shows (by ${shortDate(r.until)}) `
+        ? rewards
+          ? `Rewards: ${money(r.amount)} applied ${shortDate(r.date)}, counted until the credit shows (by ${shortDate(r.until)}) `
+          : `You paid ${money(r.amount)} on ${shortDate(r.date)}: counted until it shows (by ${shortDate(r.until)}) `
+        : rewards ? `✓ Your ${money(r.amount)} rewards credit is on the card `
         : `✓ Your ${money(r.amount)} payment ${r.status === 'posted' ? 'is on the card' : 'has left checking'} `);
       if (r.status === 'reported') {
-        const undo = el('button', { type: 'button', class: 'link-btn', 'aria-label': `Remove the ${money(r.amount)} payment` }, 'Undo');
+        const undo = el('button', { type: 'button', class: 'link-btn', 'aria-label': `Remove the ${money(r.amount)} ${rewards ? 'rewards credit' : 'payment'}` }, 'Undo');
         undo.addEventListener('click', async () => {
           await api(`/api/cards/${encodeURIComponent(c.account_id)}/payments/${encodeURIComponent(r.id)}`, { method: 'DELETE' });
           await loadCards();
@@ -1666,10 +1670,17 @@ function renderPlanTable(d) {
     if (c.promo && !c.promo_ending && c.unpaid > 0 && c.payments?.length) steps.appendChild(el('li', { class: 'muted' }, `${money(c.unpaid)} left on the 0% promo`));
     if (c.promo_ending && c.balance > 0) steps.appendChild(el('li', {}, strong(`Pay off all ${money(c.balance)} by ${shortDate(c.promo_ending)}`), el('span', { class: 'sub muted' }, 'when the promo ends, interest may be charged back to the purchase date')));
     plan.appendChild(steps);
+    if (c.rewards_applied > 0 && !(c.reported || []).some((r) => r.kind === 'rewards')) {
+      plan.appendChild(el('div', { class: 'sub muted' }, `${money(c.rewards_applied)} of rewards credited since the statement`));
+    }
     if ((c.balance || 0) > 0 || c.remaining > 0) {
+      const actions = el('div', { class: 'plan-actions' });
       const paidBtn = el('button', { type: 'button', class: 'link-btn paid-btn', 'aria-label': `I paid ${c.name}` }, 'I paid this');
       paidBtn.addEventListener('click', () => openPaidDialog(c));
-      plan.appendChild(paidBtn);
+      const rewardsBtn = el('button', { type: 'button', class: 'link-btn paid-btn', 'aria-label': `Apply rewards to ${c.name}` }, 'Apply rewards');
+      rewardsBtn.addEventListener('click', () => openPaidDialog(c, 'rewards'));
+      actions.append(paidBtn, ' · ', rewardsBtn);
+      plan.appendChild(actions);
     }
 
     const interest = el('td', { class: 'num interest-cell' });
@@ -1824,10 +1835,17 @@ $('#card-clear').addEventListener('click', async () => {
 
 // "I paid this": statement balance, current balance, or another amount.
 const paidForm = $('#paid-form');
-let payingCard = null;
-function openPaidDialog(c) {
+let payingCard = null, payingKind = 'payment';
+function openPaidDialog(c, kind = 'payment') {
   payingCard = c;
-  $('#paid-title').textContent = `I paid ${c.name}`;
+  payingKind = kind;
+  const rewards = kind === 'rewards';
+  $('#paid-title').textContent = rewards ? `Apply rewards to ${c.name}` : `I paid ${c.name}`;
+  $('#paid-note').textContent = rewards
+    ? 'Cash back you redeemed (or are about to) as a statement credit on this card. It lowers what still has to come from checking, not the minimum: most banks want the minimum as a payment. It counts until the credit shows on the card, or for 5 days if it never does. Redeem it on the card’s website or app.'
+    : 'For a payment your bank doesn’t show yet. It counts on this page only (what’s still owed, and what’s left in checking) until the real payment shows up, or for 5 days if it never does.';
+  $('#paid-choices').hidden = rewards;
+  $('#paid-date-label').textContent = rewards ? 'Redeemed on' : 'Paid on';
   const statement = c.remaining ?? null, current = c.balance > 0 ? c.balance : null;
   $('#paid-statement').textContent = statement != null ? money(statement) : '(no statement)';
   $('#paid-current').textContent = current != null ? money(current) : '—';
@@ -1835,13 +1853,14 @@ function openPaidDialog(c) {
   paidForm.kind[1].disabled = !(current > 0);
   const first = statement > 0 ? 'statement' : current > 0 ? 'current' : 'custom';
   paidForm.kind.value = first;
-  paidForm.amount.value = first === 'statement' ? statement : first === 'current' ? current : '';
+  paidForm.amount.value = rewards ? '' : first === 'statement' ? statement : first === 'current' ? current : '';
   const today = iso(new Date());
   paidForm.date.value = today;
   paidForm.date.max = today;
   paidForm.date.min = iso(new Date(Date.now() - 5 * 864e5));
   $('#paid-error').hidden = true;
   $('#paid-dialog').showModal();
+  if (rewards) paidForm.amount.focus();
 }
 paidForm.addEventListener('change', (e) => {
   if (e.target.name !== 'kind' || !payingCard) return;
@@ -1851,13 +1870,14 @@ paidForm.addEventListener('change', (e) => {
   else { paidForm.amount.value = ''; paidForm.amount.focus(); }
 });
 paidForm.amount.addEventListener('input', () => {
+  if (payingKind === 'rewards') return;
   const n = Number(paidForm.amount.value);
   paidForm.kind.value = n === payingCard?.remaining ? 'statement' : n === payingCard?.balance ? 'current' : 'custom';
 });
 paidForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   try {
-    await api(`/api/cards/${encodeURIComponent(payingCard.account_id)}/payments`, { method: 'POST', body: { amount: paidForm.amount.value, date: paidForm.date.value } });
+    await api(`/api/cards/${encodeURIComponent(payingCard.account_id)}/payments`, { method: 'POST', body: { amount: paidForm.amount.value, date: paidForm.date.value, kind: payingKind } });
     $('#paid-dialog').close();
     await loadCards();
   } catch (err) {

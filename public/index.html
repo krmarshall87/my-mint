@@ -468,15 +468,15 @@
   <dialog id="paid-dialog" class="dialog" aria-labelledby="paid-title">
     <form id="paid-form" method="dialog">
       <h3 id="paid-title">I paid this card</h3>
-      <p class="muted">For a payment your bank doesn’t show yet. It counts on this page only (what’s still owed, and what’s left in checking) until the real payment shows up, or for 5 days if it never does.</p>
-      <fieldset class="field-group paid-choices">
+      <p class="muted" id="paid-note">For a payment your bank doesn’t show yet. It counts on this page only (what’s still owed, and what’s left in checking) until the real payment shows up, or for 5 days if it never does.</p>
+      <fieldset class="field-group paid-choices" id="paid-choices">
         <legend>How much</legend>
         <label class="choice"><input type="radio" name="kind" value="statement" /> <span>Statement balance <strong id="paid-statement"></strong></span></label>
         <label class="choice"><input type="radio" name="kind" value="current" /> <span>Current balance <strong id="paid-current"></strong></span></label>
         <label class="choice"><input type="radio" name="kind" value="custom" /> <span>Another amount</span></label>
-        <label class="field">Amount <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" autocomplete="off" /></label>
       </fieldset>
-      <label class="field">Paid on <input name="date" type="date" /></label>
+      <label class="field">Amount <input name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" autocomplete="off" /></label>
+      <label class="field"><span id="paid-date-label">Paid on</span> <input name="date" type="date" /></label>
       <p id="paid-error" class="form-error" hidden></p>
       <div class="dialog-actions">
         <span class="spacer"></span>

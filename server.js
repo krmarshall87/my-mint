@@ -1564,6 +1564,8 @@ function cashKind(a) {
   return null; // CDs, HSAs: not spending money
 }
 
+// A credit on a card from redeeming rewards (cash back as a statement credit).
+const REWARDS_RE = /reward|cash ?back|redemption|redeem|statement credit|points credit/i;
 const isCardPayment = (t) => t.category === 'Credit Card Payment' || t.category_detailed === 'LOAN_PAYMENTS_CREDIT_CARD_PAYMENT' || t.parent === 'Transfer';
 
 // For cards whose bank doesn't share statements: from the statement closing
@@ -1678,13 +1680,15 @@ async function cardPlan({ buffer }) {
     const age = dayNum(today) - dayNum(r.date);
     if (age < 0 || age > REPORT_DAYS) continue;
     const onCard = txns.find((t) => t.account_id === r.account_id && t.amount < 0 && near(-t.amount, r.amount) && dayNum(t.date) >= from(r) && !usedTx.has(t.transaction_id));
-    if (onCard) { usedTx.add(onCard.transaction_id); reportStatus.set(r.id, { status: 'posted' }); continue; }
+    if (onCard) { usedTx.add(onCard.transaction_id); reportStatus.set(r.id, { status: 'posted', tx: onCard }); continue; }
+    // Rewards are a credit on the card itself: nothing leaves checking.
+    if (r.kind === 'rewards') { reportStatus.set(r.id, { status: 'reported' }); continue; }
     const out = txns.find((t) => checkingIds.has(t.account_id) && t.amount > 0 && near(t.amount, r.amount) && dayNum(t.date) >= from(r) && isRealCardPayment(t) && !usedTx.has(t.transaction_id));
     if (out) { usedTx.add(out.transaction_id); reportStatus.set(r.id, { status: 'on_the_way', tx: out }); continue; }
     reportStatus.set(r.id, { status: 'reported' });
   }
   const reportsFor = (id) => reports.filter((r) => r.account_id === id && reportStatus.has(r.id))
-    .map((r) => ({ id: r.id, date: r.date, amount: r.amount, status: reportStatus.get(r.id).status, until: fromDayNum(dayNum(r.date) + REPORT_DAYS), tx: reportStatus.get(r.id).tx }));
+    .map((r) => ({ id: r.id, kind: r.kind || 'payment', date: r.date, amount: r.amount, status: reportStatus.get(r.id).status, until: fromDayNum(dayNum(r.date) + REPORT_DAYS), tx: reportStatus.get(r.id).tx }));
 
   const cards = accounts.filter((a) => a.type === 'credit').map((a) => {
     const d = cardDetails(a, st.get(a.account_id), us.get(a.account_id) || {}, today, txns);
@@ -1701,18 +1705,28 @@ async function cardPlan({ buffer }) {
     const wanted = [d.statement_balance, d.minimum_payment, d.statement_balance != null ? d.statement_balance - posted : null, d.last_payment_amount].filter((x) => x > 0);
     const candidates = (inTransit.get(a.account_id) || []).filter((p) => !d.statement_date || p.date > d.statement_date);
     // A payment you reported that has left checking is on the way for this card, whatever it matched.
-    const confirmed = reported.filter((r) => r.status === 'on_the_way').map((r) => r.tx);
+    const confirmed = reported.filter((r) => r.kind === 'payment' && r.status === 'on_the_way').map((r) => r.tx);
     const transit = [
       ...candidates.filter((p) => p.mask_match || wanted.some((w) => Math.abs(w - p.amount) <= 1) || confirmed.some((t) => t.transaction_id === p.id)),
       ...confirmed.filter((t) => !candidates.some((p) => p.id === t.transaction_id) && !(inflowsByCard.get(a.account_id) || []).some((c) => near(-c.amount, t.amount) && dayNum(c.date) >= dayNum(t.date) - 2))
         .map((t) => ({ id: t.transaction_id, date: t.date, amount: round2(t.amount), name: t.display_name || t.name, pending: t.pending, mask_match: false })),
     ];
     const possibleTransit = candidates.filter((p) => !transit.includes(p));
-    // Reported and not seen yet: counts as paid.
-    const reportedOpen = round2(reported.filter((r) => r.status === 'reported').reduce((s, r) => s + r.amount, 0));
-    const paid = round2(posted + transit.reduce((s, p) => s + p.amount, 0) + reportedOpen);
+    // Reported and not seen yet: counts as paid (payments also come off checking).
+    const reportedOpen = round2(reported.filter((r) => r.kind === 'payment' && r.status === 'reported').reduce((s, r) => s + r.amount, 0));
+    // Rewards applied as a statement credit: credits on the card since the statement
+    // that look like rewards, a credit matching rewards you applied, and rewards you
+    // applied that haven't shown yet. They lower what's owed, not the minimum
+    // (banks want the minimum as a payment), and never come out of checking.
+    const since = d.statement_date;
+    const rewardCredits = since ? txns.filter((t) => t.account_id === a.account_id && t.amount < 0 && t.date > since && !isCardPayment(t) && REWARDS_RE.test(`${t.name} ${t.merchant_name || ''}`)) : [];
+    const rewardPosted = reported.filter((r) => r.kind === 'rewards' && r.status === 'posted' && !rewardCredits.includes(r.tx) && !isCardPayment(r.tx));
+    const rewards = round2(rewardCredits.reduce((s, t) => s - t.amount, 0) + rewardPosted.reduce((s, r) => s + r.amount, 0)
+      + reported.filter((r) => r.kind === 'rewards' && r.status === 'reported').reduce((s, r) => s + r.amount, 0));
+    const paidForMinimum = round2(posted + transit.reduce((s, p) => s + p.amount, 0) + reportedOpen);
+    const paid = round2(paidForMinimum + rewards);
     const remaining = d.statement_balance == null ? null : round2(Math.max(0, d.statement_balance - paid));
-    const minimum = remaining == null ? null : round2(Math.min(remaining, Math.max(0, (d.minimum_payment ?? Math.max(35, remaining * 0.02)) - paid)));
+    const minimum = remaining == null ? null : round2(Math.min(remaining, Math.max(0, (d.minimum_payment ?? Math.max(35, remaining * 0.02)) - paidForMinimum)));
     // 1. The bank's balance per rate (purchases, balance transfers, promos).
     // Payments above the minimum go to the highest rate first, so what's left
     // unpaid sits at the lowest rates. A 0% part needn't be paid off to avoid interest.
@@ -1747,6 +1761,7 @@ async function cardPlan({ buffer }) {
       promo_balance: promoBalance,
       in_transit: transit,
       reported: reported.map(({ tx, ...r }) => r),
+      rewards_applied: rewards,
       reported_open: reportedOpen,
       possible_transit: possibleTransit,
       // The bank says past due, unless the minimum has since been paid (or is on the way).
@@ -2055,8 +2070,9 @@ app.post('/api/cards/:id/payments', async (req, res) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > today || dayNum(today) - dayNum(date) > REPORT_DAYS) {
     return res.status(400).json({ error_message: `The payment date must be within the last ${REPORT_DAYS} days` });
   }
+  const kind = req.body?.kind === 'rewards' ? 'rewards' : 'payment';
   const id = crypto.randomUUID();
-  await store.addReportedPayment({ id, account_id: a.account_id, amount: round2(amount), date }, fromDayNum(dayNum(today) - 30));
+  await store.addReportedPayment({ id, account_id: a.account_id, amount: round2(amount), date, kind }, fromDayNum(dayNum(today) - 30));
   res.json({ ok: true, id });
 });
 app.delete('/api/cards/:id/payments/:pid', async (req, res) => {
