@@ -177,7 +177,7 @@ function markNeeded(form, names) {
   (inputs[0] || form.querySelector('input'))?.focus();
 }
 const LOAN_FIELDS_FOR = { 'interest rate': ['rate'], 'monthly payment': ['payment'] };
-const CARD_FIELDS_FOR = { statement: ['closing_day', 'due_day'], 'statement date': ['closing_day', 'close_days_before_due', 'due_day'], APR: ['apr'], 'credit limit': ['credit_limit'] };
+const CARD_FIELDS_FOR = { statement: ['closing_day', 'due_day'], 'statement date': ['statement_date'], APR: ['apr'], 'credit limit': ['credit_limit'] };
 
 const expiringSoon = (i) => i.expires_in_days != null && i.expires_in_days <= 30;
 const ERROR_TEXT = {
@@ -1595,13 +1595,13 @@ function renderPlanTable(d) {
     btn.addEventListener('click', () => openCardDialog(c, { highlight: !!needs }));
     name.append(el('strong', {}, c.name), ' ', btn);
     const sub = c.statement_date
-      ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${paidPart(c)}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : ''}`
+      ? `Statement ${shortDate(c.statement_date)}: ${money(c.statement_balance)}${paidPart(c)}${c.source === 'you' ? ' (yours)' : c.source === 'cycle' ? ' (calculated from your closing day)' : c.statement_date_from_you ? ' (date from you)' : ''}`
       : c.statement_balance != null ? `Statement balance ${money(c.statement_balance)} (date not given) · balance now ${money(c.balance || 0)}`
       : `Balance ${money(c.balance || 0)} · no statement yet`;
     name.append(el('div', { class: 'sub' }, sub));
     if (c.statement_date_missing) {
       name.append(el('div', { class: 'sub attention-text', title: 'Click ✎ and add when the statement closes (a day of the month, or days before the due date) so the plan can work out the current statement.' },
-        'Your bank didn’t say when this statement closed, so it may be an old one'));
+        'Your bank didn’t say when this statement closed. Add its date with ✎ (or the closing day, so it’s worked out every month)'));
     }
     // Payments you marked paid: counted until the bank shows them, then the real one counts.
     for (const r of c.reported || []) {
@@ -1831,7 +1831,8 @@ cardForm.addEventListener('submit', async (e) => {
 cardForm.addEventListener('input', (e) => {
   const name = e.target.name;
   if (!e.target.value) return;
-  const group = ['closing_day', 'close_days_before_due'].includes(name) ? ['closing_day', 'close_days_before_due'] : [name];
+  const CLOSING = ['statement_date', 'closing_day', 'close_days_before_due'];
+  const group = CLOSING.includes(name) ? CLOSING : [name];
   for (const n of group) cardForm[n]?.closest('.field')?.classList.remove('needed');
 });
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
