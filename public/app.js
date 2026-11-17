@@ -1791,17 +1791,17 @@ function openCardDialog(c, { highlight = false } = {}) {
     : 'Your bank doesn’t share this card’s statement, so add it from the card’s website or paper statement.';
   const mine = c.mine || {};
   const set = (k, v, ph) => { cardForm[k].value = v ?? ''; cardForm[k].placeholder = ph ?? ''; };
-  set('apr', mine.apr, c.apr_assumed ? 'not reported' : String(c.regular_apr ?? c.apr));
-  set('credit_limit', mine.credit_limit, c.credit_limit_source === 'bank' ? String(c.credit_limit) : 'not reported');
+  set('apr', mine.apr, c.apr_assumed ? 'not reported' : `bank: ${c.regular_apr ?? c.apr}`);
+  set('credit_limit', mine.credit_limit, c.credit_limit_source === 'bank' ? `bank: ${c.credit_limit}` : 'not reported');
   for (const k of ['closing_day', 'close_days_before_due', 'due_day', 'min_floor', 'min_pct']) set(k, mine[k], '');
   // The cycle is only needed when the bank doesn't share statements.
   $('#card-cycle').open = c.source !== 'plaid';
   set('promo_apr', mine.promo_apr, '');
   set('promo_end', mine.promo_end);
-  set('statement_balance', c.source === 'you' ? c.statement_balance : mine.statement_balance, fromBank ? String(c.statement_balance) : '');
+  set('statement_balance', c.source === 'you' ? c.statement_balance : mine.statement_balance, fromBank ? `bank: ${c.statement_balance}` : '');
   set('statement_date', c.source === 'you' ? c.statement_date : mine.statement_date);
   set('due_date', c.source === 'you' ? c.due_date : mine.due_date);
-  set('minimum_payment', c.source === 'you' ? c.minimum_payment : mine.minimum_payment, fromBank && c.minimum_payment != null ? String(c.minimum_payment) : '');
+  set('minimum_payment', c.source === 'you' ? c.minimum_payment : mine.minimum_payment, fromBank && c.minimum_payment != null ? `bank: ${c.minimum_payment}` : '');
   $('#card-dialog').showModal();
   markNeeded(cardForm, highlight ? (c.missing || []).flatMap((m) => CARD_FIELDS_FOR[m] || []) : []);
 }
