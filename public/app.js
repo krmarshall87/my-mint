@@ -1790,6 +1790,11 @@ cardForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = {};
   for (const k of ['credit_limit', 'apr', 'promo_apr', 'promo_end', 'closing_day', 'close_days_before_due', 'due_day', 'min_floor', 'min_pct', 'statement_balance', 'statement_date', 'due_date', 'minimum_payment']) body[k] = cardForm[k].value;
+  // Show that it's working: the server can take a few seconds to wake up.
+  const save = cardForm.querySelector('button[type=submit]');
+  save.disabled = true;
+  save.textContent = 'Saving…';
+  $('#card-error').hidden = true;
   try {
     await api(`/api/cards/${encodeURIComponent(editingCard.account_id)}`, { method: 'PUT', body });
     $('#card-dialog').close();
@@ -1798,7 +1803,17 @@ cardForm.addEventListener('submit', async (e) => {
     const box = $('#card-error');
     box.textContent = err.message;
     box.hidden = false;
+  } finally {
+    save.disabled = false;
+    save.textContent = 'Save';
   }
+});
+// "Needed" goes away as you fill a field in; either way of closing is enough.
+cardForm.addEventListener('input', (e) => {
+  const name = e.target.name;
+  if (!e.target.value) return;
+  const group = ['closing_day', 'close_days_before_due'].includes(name) ? ['closing_day', 'close_days_before_due'] : [name];
+  for (const n of group) cardForm[n]?.closest('.field')?.classList.remove('needed');
 });
 $('#card-cancel').addEventListener('click', () => $('#card-dialog').close());
 $('#card-clear').addEventListener('click', async () => {

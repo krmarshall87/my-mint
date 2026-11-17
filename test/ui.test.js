@@ -61,6 +61,13 @@ test('every tab renders cleanly', { skip: !chromium && 'Playwright is not instal
   await citiRow.getByRole('button', { name: /Remove the/ }).click();
   await page.waitForTimeout(800);
   assert.doesNotMatch(await page.locator('#card-plan-table').innerText(), /You paid/);
+  // A card missing its statement: filling either closing field clears "Needed" on both.
+  await page.locator('#card-plan-table tr', { hasText: 'OnePay' }).getByRole('button', { name: /Add details/ }).click();
+  await page.waitForSelector('#card-dialog[open]');
+  assert.ok(await page.locator('#card-form .field.needed input[name=closing_day]').count());
+  await page.locator('#card-form input[name=closing_day]').fill('7');
+  assert.equal(await page.locator('#card-form .field.needed input[name=closing_day], #card-form .field.needed input[name=close_days_before_due]').count(), 0);
+  await page.locator('#card-cancel').click();
   // The car loan has no rate yet: its note must read as text.
   await page.goto(`${api.base}/#loans`);
   await page.waitForTimeout(800);
