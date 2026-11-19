@@ -13,6 +13,13 @@ updates:
         update-types: [minor, patch]
     commit-message:
       prefix: deps
+    ignore:
+      # plaid 51 is a new SDK (the old one moved to plaid/legacy) with nothing new
+      # for the products we use. Upgrading = require('plaid/legacy') in server.js
+      # and test/fixtures/plaid-stub.js (tests pass with it). Revisit if Plaid
+      # announces the end of v50 or a feature needs the new SDK.
+      - dependency-name: plaid
+        versions: ['51.x']
   - package-ecosystem: github-actions
     directory: /
     schedule:
